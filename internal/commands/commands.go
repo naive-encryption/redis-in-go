@@ -4,7 +4,9 @@ package commands
 import (
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
+	"time"
 
 	"redis-in-go/internal/resp"
 	"redis-in-go/internal/store"
@@ -37,7 +39,30 @@ func (h *Handler) echoCmd(args []string) {
 }
 
 func (h *Handler) setCmd(args []string) {
-	h.store.Set(args[0], args[1]) // TODO: check for nil
+	var ttl time.Duration
+	if len(args) > 2 {
+		switch strings.ToLower(args[2]) {
+		case "ex":
+			if len(args) > 3 {
+				val, err := strconv.Atoi(args[3])
+				if err != nil {
+					h.conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
+					return
+				}
+				ttl = time.Duration(val) * time.Second
+			}
+		case "px":
+			if len(args) > 3 {
+				val, err := strconv.Atoi(args[3])
+				if err != nil {
+					h.conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
+					return
+				}
+				ttl = time.Duration(val) * time.Millisecond
+			}
+		}
+	}
+	h.store.Set(args[0], args[1], ttl) // TODO: check for nil
 	h.conn.Write([]byte("+OK\r\n"))
 }
 

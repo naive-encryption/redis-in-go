@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"net"
+
+	"redis-in-go/internal/commands"
 )
 
 func main() {
@@ -17,22 +19,9 @@ func main() {
 			fmt.Println(err)
 			continue
 		}
-		go handleConnection(conn)
+		go func() {
+			h := commands.NewHandler(conn)
+			h.HandleIncomingStream(conn)
+		}()
 	}
-}
-
-func handleConnection(conn net.Conn) {
-	for {
-		buf := make([]byte, 1024)
-
-		_, err := conn.Read(buf)
-		if err != nil {
-			fmt.Println("Error with reading connection", err.Error())
-			return
-		}
-		conn.Write([]byte("+PONG\r\n"))
-	}
-}
-
-func parseInput(in string) {
 }

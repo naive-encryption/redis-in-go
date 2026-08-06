@@ -28,8 +28,25 @@ func NewHandler(conn net.Conn) *Handler {
 		"get":    h.getCmd,
 		"rpush":  h.rpushCmd,
 		"lrange": h.lrangeCmd,
+		"lpush":  h.lpushCmd,
+		"llen":   h.llenCmd,
 	}
 	return h
+}
+
+func (h *Handler) llenCmd(args []string) {
+	len := h.store.LLen(args[0])
+	_, err := fmt.Fprintf(h.conn, ":%d\r\n", len)
+	if err != nil {
+		fmt.Println(err)
+	}
+}
+
+func (h *Handler) lpushCmd(args []string) {
+	length := h.store.LPush(args[0], args[1:]...)
+	if length > 0 {
+		fmt.Fprintf(h.conn, ":%d\r\n", length)
+	}
 }
 
 func (h *Handler) lrangeCmd(args []string) {

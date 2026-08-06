@@ -60,6 +60,8 @@ func (s *Store) RPush(listKey string, value ...string) int {
 }
 
 func (s *Store) LRange(listKey string, start, stop int) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	_, ok := s.elements[listKey]
 	if !ok {
 		return ""
@@ -89,4 +91,23 @@ func (s *Store) LRange(listKey string, start, stop int) string {
 		out = append(out, fmt.Sprintf("%s\r\n", s.elements[listKey][i]))
 	}
 	return strings.Join(out, "")
+}
+
+func (s *Store) LPush(listKey string, values ...string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reversed := make([]string, len(values))
+	for i, v := range values {
+		reversed[len(values)-1-i] = v
+	}
+	s.elements[listKey] = append(reversed, s.elements[listKey]...)
+	return len(s.elements[listKey])
+}
+
+func (s *Store) LLen(listKey string) int {
+	_, ok := s.elements[listKey]
+	if !ok {
+		return 0
+	}
+	return len(s.elements[listKey])
 }

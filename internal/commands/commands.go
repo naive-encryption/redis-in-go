@@ -30,8 +30,23 @@ func NewHandler(conn net.Conn) *Handler {
 		"lrange": h.lrangeCmd,
 		"lpush":  h.lpushCmd,
 		"llen":   h.llenCmd,
+		"lpop":   h.lpopCmd,
 	}
 	return h
+}
+
+func (h *Handler) lpopCmd(args []string) {
+	poppedElements := ""
+	if len(args) > 1 {
+		val, err := strconv.Atoi(args[1])
+		if err != nil {
+			fmt.Println(err)
+		}
+		poppedElements = h.store.LPop(args[0], val)
+	} else {
+		poppedElements = h.store.LPop(args[0], 1)
+	}
+	fmt.Fprintf(h.conn, poppedElements)
 }
 
 func (h *Handler) llenCmd(args []string) {

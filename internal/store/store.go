@@ -111,3 +111,25 @@ func (s *Store) LLen(listKey string) int {
 	}
 	return len(s.elements[listKey])
 }
+
+func (s *Store) LPop(listKey string, numberElements int) string {
+	_, ok := s.elements[listKey]
+	if !ok {
+		return "$-1\r\n"
+	}
+	if numberElements >= len(s.elements[listKey]) {
+		numberElements = len(s.elements[listKey])
+	}
+
+	out := make([]string, 0, 100) // HACK:
+	if numberElements > 1 {
+		out = append(out, fmt.Sprintf("*%d\r\n", numberElements))
+	}
+	for i := 0; i < numberElements; i++ {
+		elem := s.elements[listKey][i]
+		out = append(out, fmt.Sprintf("$%d\r\n", len(elem)))
+		out = append(out, fmt.Sprintf("%s\r\n", elem))
+	}
+	s.elements[listKey] = s.elements[listKey][numberElements:]
+	return strings.Join(out, "")
+}

@@ -22,13 +22,39 @@ func NewHandler(conn net.Conn) *Handler {
 	store := store.NewStore()
 	h := &Handler{conn: conn, store: store}
 	h.builtIns = map[string]func(args []string){
-		"echo":  h.echoCmd,
-		"ping":  h.pingCmd,
-		"set":   h.setCmd,
-		"get":   h.getCmd,
-		"rpush": h.rpushCmd,
+		"echo":   h.echoCmd,
+		"ping":   h.pingCmd,
+		"set":    h.setCmd,
+		"get":    h.getCmd,
+		"rpush":  h.rpushCmd,
+		"lrange": h.lrangeCmd,
 	}
 	return h
+}
+
+func (h *Handler) lrangeCmd(args []string) {
+	if len(args) < 3 {
+		h.conn.Write([]byte("*0\r\n"))
+	}
+
+	start, err := strconv.Atoi(args[1])
+	if err != nil {
+		h.conn.Write([]byte("*0\r\n"))
+	}
+
+	stop, err := strconv.Atoi(args[2])
+	if err != nil {
+		h.conn.Write([]byte("*0\r\n"))
+	}
+
+	out := h.store.LRange(args[0], start, stop)
+
+	if out == "" {
+		h.conn.Write([]byte("*0\r\n"))
+		return
+	}
+
+	fmt.Fprint(h.conn, out)
 }
 
 func (h *Handler) rpushCmd(args []string) {

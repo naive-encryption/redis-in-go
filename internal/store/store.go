@@ -3,6 +3,8 @@ package store
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -55,4 +57,36 @@ func (s *Store) RPush(listKey string, value ...string) int {
 	}
 	s.elements[listKey] = append(s.elements[listKey], value...)
 	return len(s.elements[listKey])
+}
+
+func (s *Store) LRange(listKey string, start, stop int) string {
+	_, ok := s.elements[listKey]
+	if !ok {
+		return ""
+	}
+
+	if start < 0 {
+		start = len(s.elements[listKey]) + start
+		start = max(start, 0)
+	}
+	if stop < 0 {
+		stop = len(s.elements[listKey]) + stop
+		stop = max(stop, 0)
+	}
+
+	if start >= len(s.elements[listKey]) || start > stop {
+		return ""
+	}
+	if stop >= len(s.elements[listKey]) {
+		stop = len(s.elements[listKey]) - 1
+	}
+
+	out := make([]string, 0, 100) // HACK:
+	out = append(out, fmt.Sprintf("*%d\r\n", stop-start+1))
+
+	for i := start; i <= stop; i++ {
+		out = append(out, fmt.Sprintf("$%d\r\n", len(s.elements[listKey][i])))
+		out = append(out, fmt.Sprintf("%s\r\n", s.elements[listKey][i]))
+	}
+	return strings.Join(out, "")
 }

@@ -18,8 +18,7 @@ type Handler struct {
 	store    *store.Store
 }
 
-func NewHandler(conn net.Conn) *Handler {
-	store := store.NewStore()
+func NewHandler(conn net.Conn, store *store.Store) *Handler {
 	h := &Handler{conn: conn, store: store}
 	h.builtIns = map[string]func(args []string){
 		"echo":   h.echoCmd,
@@ -31,8 +30,38 @@ func NewHandler(conn net.Conn) *Handler {
 		"lpush":  h.lpushCmd,
 		"llen":   h.llenCmd,
 		"lpop":   h.lpopCmd,
+		"blpop":  h.blpopCmd,
+		"type":   h.typeCmd,
 	}
 	return h
+}
+
+func (h *Handler) typeCmd(args []string) {
+	if len(args) == 0 {
+		return
+	}
+	response := fmt.Sprintf("+%s\r\n", h.store.Type(args[0]))
+	fmt.Fprint(h.conn, response)
+}
+
+func (h *Handler) blpopCmd(args []string) {
+	if len(args) < 2 {
+		return
+	}
+
+	listKey := args[0]
+	timeoutSeconds, err := strconv.ParseFloat(args[1], 64)
+	if err != nil {
+		fmt.Println(err)
+	}
+	timeout := time.Duration(timeoutSeconds * float64(time.Second))
+	val, ok := h.store.BLPop(listKey, timeout)
+	if !ok {
+		fmt.Fprintf(h.conn, "*-1\r\n")
+		return
+	}
+	response := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(listKey), listKey, len(val), val)
+	fmt.Fprint(h.conn, response)
 }
 
 func (h *Handler) lpopCmd(args []string) {

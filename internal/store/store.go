@@ -15,13 +15,14 @@ type entry struct {
 }
 
 type Store struct {
-	mu       sync.Mutex
-	data     map[string]entry
-	elements map[string][]string
+	mu              sync.Mutex
+	data            map[string]entry
+	elements        map[string][]string
+	blockingClients map[string][]chan string
 }
 
 func NewStore() *Store {
-	return &Store{data: make(map[string]entry), elements: make(map[string][]string)}
+	return &Store{data: make(map[string]entry), elements: make(map[string][]string), blockingClients: make(map[string][]chan string)}
 }
 
 func (s *Store) Set(key, value string, ttl time.Duration) {
@@ -51,6 +52,9 @@ func (s *Store) Get(key string) (value string, err error) {
 func (s *Store) RPush(listKey string, value ...string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if length, handled := s.checkForBlockingClients(listKey, false, value...); handled {
+		return length
+	}
 	_, ok := s.elements[listKey]
 	if !ok {
 		s.elements[listKey] = make([]string, 0, len(value))
@@ -100,6 +104,11 @@ func (s *Store) LPush(listKey string, values ...string) int {
 	for i, v := range values {
 		reversed[len(values)-1-i] = v
 	}
+
+	if length, handled := s.checkForBlockingClients(listKey, true, reversed...); handled {
+		return length
+	}
+
 	s.elements[listKey] = append(reversed, s.elements[listKey]...)
 	return len(s.elements[listKey])
 }
@@ -132,4 +141,95 @@ func (s *Store) LPop(listKey string, numberElements int) string {
 	}
 	s.elements[listKey] = s.elements[listKey][numberElements:]
 	return strings.Join(out, "")
+}
+
+func (s *Store) BLPop(listKey string, timeout time.Duration) (string, bool) {
+	s.mu.Lock()
+
+	if list, exists := s.elements[listKey]; exists && len(list) > 0 {
+		val := list[0]
+		s.elements[listKey] = list[1:]
+		s.mu.Unlock()
+		return val, true
+	}
+
+	ch := make(chan string, 1)
+	s.blockingClients[listKey] = append(s.blockingClients[listKey], ch)
+
+	s.mu.Unlock()
+
+	var timeoutChan <-chan time.Time
+	if timeout > 0 {
+		timeoutChan = time.After(timeout)
+	}
+
+	select {
+	case val := <-ch:
+		return val, true
+	case <-timeoutChan:
+		s.mu.Lock()
+		s.removeWaiter(listKey, ch)
+		s.mu.Unlock()
+
+		select {
+		case val := <-ch:
+			return val, true
+		default:
+			return "", false
+		}
+	}
+}
+
+func (s *Store) removeWaiter(listKey string, targetChain chan string) {
+	waiters := s.blockingClients[listKey]
+
+	for i, ch := range waiters {
+		if ch == targetChain {
+			s.blockingClients[listKey] = append(waiters[:i], waiters[i+1:]...)
+			break
+		}
+	}
+
+	if len(s.blockingClients[listKey]) == 0 {
+		delete(s.blockingClients, listKey)
+	}
+}
+
+// return int if elements are added
+func (s *Store) checkForBlockingClients(listKey string, isLeftPush bool, value ...string) (int, bool) {
+	waiters, exists := s.blockingClients[listKey]
+	if !exists || len(waiters) == 0 {
+		return 0, false
+	}
+
+	ch := waiters[0]
+	s.blockingClients[listKey] = waiters[1:]
+	if len(s.blockingClients[listKey]) == 0 {
+		delete(s.blockingClients, listKey)
+	}
+
+	ch <- value[0]
+	remainingVals := value[1:]
+
+	if len(remainingVals) > 0 {
+		if _, ok := s.elements[listKey]; !ok {
+			s.elements[listKey] = make([]string, 0, len(remainingVals))
+		}
+		if isLeftPush {
+			s.elements[listKey] = append(remainingVals, s.elements[listKey]...)
+		} else {
+			s.elements[listKey] = append(s.elements[listKey], remainingVals...)
+		}
+	}
+	return len(s.elements[listKey]) + 1, true
+}
+
+func (s *Store) Type(listKey string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.data[listKey]
+	if !ok {
+		return "none"
+	}
+	return "string"
 }

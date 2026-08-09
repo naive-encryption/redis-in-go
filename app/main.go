@@ -5,6 +5,7 @@ import (
 	"net"
 
 	"redis-in-go/internal/commands"
+	"redis-in-go/internal/store"
 )
 
 func main() {
@@ -13,6 +14,8 @@ func main() {
 		panic(err)
 	}
 
+	store := store.NewStore()
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -20,7 +23,7 @@ func main() {
 			continue
 		}
 		go func() {
-			h := commands.NewHandler(conn)
+			h := commands.NewHandler(conn, store)
 			h.HandleIncomingStream(conn)
 		}()
 	}

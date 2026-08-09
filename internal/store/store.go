@@ -9,6 +9,15 @@ import (
 	"time"
 )
 
+type streamEntry struct {
+	ID     string
+	Values map[string]string
+}
+
+type Stream struct {
+	Entries []streamEntry
+}
+
 type entry struct {
 	value     string
 	expiresAt time.Time
@@ -19,10 +28,16 @@ type Store struct {
 	data            map[string]entry
 	elements        map[string][]string
 	blockingClients map[string][]chan string
+	streams         map[string]Stream
 }
 
 func NewStore() *Store {
-	return &Store{data: make(map[string]entry), elements: make(map[string][]string), blockingClients: make(map[string][]chan string)}
+	return &Store{
+		data:            make(map[string]entry),
+		elements:        make(map[string][]string),
+		blockingClients: make(map[string][]chan string),
+		streams:         make(map[string]Stream),
+	}
 }
 
 func (s *Store) Set(key, value string, ttl time.Duration) {
@@ -227,9 +242,30 @@ func (s *Store) checkForBlockingClients(listKey string, isLeftPush bool, value .
 func (s *Store) Type(listKey string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, ok := s.data[listKey]
-	if !ok {
-		return "none"
+	if _, ok := s.data[listKey]; ok {
+		return "string"
 	}
-	return "string"
+	if _, ok := s.streams[listKey]; ok {
+		return "stream"
+	}
+	return "none"
+}
+
+func (s *Store) XAdd(streamKey string, id string, values map[string]string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry := streamEntry{ID: id, Values: values}
+
+	stream, ok := s.streams[streamKey]
+	if !ok {
+		s.streams[streamKey] = Stream{Entries: []streamEntry{entry}}
+		return s.streams[streamKey].Entries[0].ID
+	}
+
+	stream.Entries = append(stream.Entries, entry)
+
+	s.streams[streamKey] = stream
+
+	return s.streams[streamKey].Entries[len(s.streams[streamKey].Entries)-1].ID
 }

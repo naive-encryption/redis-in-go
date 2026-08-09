@@ -32,8 +32,19 @@ func NewHandler(conn net.Conn, store *store.Store) *Handler {
 		"lpop":   h.lpopCmd,
 		"blpop":  h.blpopCmd,
 		"type":   h.typeCmd,
+		"xadd":   h.xaddCmd,
 	}
 	return h
+}
+
+func (h *Handler) xaddCmd(args []string) {
+	values := make(map[string]string, len(args[2:]))
+	for i := 2; i < len(args)-1; i += 2 {
+		values[args[i]] = args[i+1]
+	}
+	response := h.store.XAdd(args[0], args[1], values)
+	response = fmt.Sprintf("$%d\r\n%s\r\n", len(response), response)
+	fmt.Fprint(h.conn, response)
 }
 
 func (h *Handler) typeCmd(args []string) {

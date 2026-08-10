@@ -4,6 +4,7 @@ package store
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -251,21 +252,52 @@ func (s *Store) Type(listKey string) string {
 	return "none"
 }
 
-func (s *Store) XAdd(streamKey string, id string, values map[string]string) string {
+func (s *Store) XAdd(streamKey string, id string, values map[string]string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entry := streamEntry{ID: id, Values: values}
-
-	stream, ok := s.streams[streamKey]
-	if !ok {
-		s.streams[streamKey] = Stream{Entries: []streamEntry{entry}}
-		return s.streams[streamKey].Entries[0].ID
+	newMs, newSq, err := convertID(id)
+	if err != nil {
+		return "", errors.New("ERR Invalid stream ID specified as argument")
 	}
 
-	stream.Entries = append(stream.Entries, entry)
+	if newMs == 0 && newSq == 0 {
+		return "", errors.New("ERR The ID specified in XADD must be greater than 0-0")
+	}
 
-	s.streams[streamKey] = stream
+	stream, ok := s.streams[streamKey]
+	if ok && len(stream.Entries) > 0 {
+		lastEntryID := stream.Entries[len(stream.Entries)-1].ID
+		lastMs, lastSq, _ := convertID(lastEntryID)
 
-	return s.streams[streamKey].Entries[len(s.streams[streamKey].Entries)-1].ID
+		if newMs < lastMs || (newMs == lastMs && newSq <= lastSq) {
+			return "", errors.New("ERR The ID specified in XADD is equal or smaller than the target stream top item")
+		}
+	}
+
+	entry := streamEntry{ID: id, Values: values}
+
+	if !ok {
+		s.streams[streamKey] = Stream{Entries: []streamEntry{entry}}
+	} else {
+		stream.Entries = append(stream.Entries, entry)
+		s.streams[streamKey] = stream
+	}
+	return id, nil
+}
+
+func convertID(id string) (int, int, error) {
+	splitID := strings.Split(id, "-")
+	if len(splitID) != 2 {
+		return 0, 0, errors.New("invalid ID format")
+	}
+	milisecondsTime, err := strconv.Atoi(splitID[0])
+	if err != nil {
+		return 0, 0, err
+	}
+	sequenceNumber, err := strconv.Atoi(splitID[1])
+	if err != nil {
+		return 0, 0, err
+	}
+	return milisecondsTime, sequenceNumber, nil
 }

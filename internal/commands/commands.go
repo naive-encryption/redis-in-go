@@ -42,7 +42,12 @@ func (h *Handler) xaddCmd(args []string) {
 	for i := 2; i < len(args)-1; i += 2 {
 		values[args[i]] = args[i+1]
 	}
-	response := h.store.XAdd(args[0], args[1], values)
+	response, err := h.store.XAdd(args[0], args[1], values)
+	if err != nil {
+		response = fmt.Sprintf("-%s\r\n", err.Error())
+		fmt.Fprint(h.conn, response)
+		return
+	}
 	response = fmt.Sprintf("$%d\r\n%s\r\n", len(response), response)
 	fmt.Fprint(h.conn, response)
 }

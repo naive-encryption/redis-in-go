@@ -256,26 +256,20 @@ func (s *Store) XAdd(streamKey string, id string, values map[string]string) (str
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	newMs, newSq, err := convertID(id)
-	if err != nil {
-		return "", errors.New("ERR Invalid stream ID specified as argument")
-	}
-
-	if newMs == 0 && newSq == 0 {
-		return "", errors.New("ERR The ID specified in XADD must be greater than 0-0")
-	}
-
 	stream, ok := s.streams[streamKey]
-	if ok && len(stream.Entries) > 0 {
-		lastEntryID := stream.Entries[len(stream.Entries)-1].ID
-		lastMs, lastSq, _ := convertID(lastEntryID)
 
-		if newMs < lastMs || (newMs == lastMs && newSq <= lastSq) {
-			return "", errors.New("ERR The ID specified in XADD is equal or smaller than the target stream top item")
-		}
+	var lastID string
+
+	if ok && len(stream.Entries) > 0 {
+		lastID = stream.Entries[len(stream.Entries)-1].ID
 	}
 
-	entry := streamEntry{ID: id, Values: values}
+	finalID, err := resolveStreamID(id, lastID)
+	if err != nil {
+		return "", err
+	}
+
+	entry := streamEntry{ID: finalID, Values: values}
 
 	if !ok {
 		s.streams[streamKey] = Stream{Entries: []streamEntry{entry}}
@@ -283,7 +277,50 @@ func (s *Store) XAdd(streamKey string, id string, values map[string]string) (str
 		stream.Entries = append(stream.Entries, entry)
 		s.streams[streamKey] = stream
 	}
-	return id, nil
+	return finalID, nil
+}
+
+func resolveStreamID(requestedID, lastID string) (string, error) {
+	var lastMs, lastSq int
+
+	if lastID != "" {
+		lastMs, lastSq, _ = convertID(lastID)
+	}
+
+	if requestedID == "*" {
+		nowMs := int(time.Now().UnixMilli())
+
+		nowMs = max(nowMs, lastMs)
+
+		newSq := 0
+		if nowMs == lastMs {
+			newSq = lastSq + 1
+		}
+		return fmt.Sprintf("%d-%d", nowMs, newSq), nil
+	}
+
+	newMs, newSq, err := convertID(requestedID)
+	if err != nil {
+		return "", errors.New("ERR Invalid stream ID specified as argument")
+	}
+
+	if newSq == -1 {
+		if lastID != "" && newMs == lastMs {
+			newSq = lastSq + 1
+		} else if newMs == 0 {
+			newSq = 1
+		} else {
+			newSq = 0
+		}
+	}
+
+	if newMs == 0 && newSq == 0 {
+		return "", errors.New("ERR The ID specified in XADD must be greater than 0-0")
+	}
+	if lastID != "" && (newMs < lastMs || (newMs == lastMs && newSq <= lastSq)) {
+		return "", errors.New("ERR The ID specified in XADD is equal or smaller than the target stream top item")
+	}
+	return fmt.Sprintf("%d-%d", newMs, newSq), nil
 }
 
 func convertID(id string) (int, int, error) {
@@ -295,9 +332,16 @@ func convertID(id string) (int, int, error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	sequenceNumber, err := strconv.Atoi(splitID[1])
-	if err != nil {
-		return 0, 0, err
+
+	var sequenceNumber int
+	if splitID[1] == "*" {
+		sequenceNumber = -1
+	} else {
+		sequenceNumber, err = strconv.Atoi(splitID[1])
+		if err != nil {
+			return 0, 0, err
+		}
+
 	}
 	return milisecondsTime, sequenceNumber, nil
 }

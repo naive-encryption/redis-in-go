@@ -2,8 +2,10 @@
 package store
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -344,4 +346,71 @@ func convertID(id string) (int, int, error) {
 
 	}
 	return milisecondsTime, sequenceNumber, nil
+}
+
+type RangeEntry struct {
+	ID     string
+	Values []string
+}
+
+func (s *Store) XRange(streamKey string, startID, endID string) []RangeEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	stream, ok := s.streams[streamKey]
+	if !ok {
+		return nil // TODO: specify the error
+	}
+
+	if startID == "-" {
+		startID = "0-1"
+	}
+	if endID == "+" {
+		endID = s.streams[streamKey].Entries[len(s.streams[streamKey].Entries)-1].ID
+	}
+	startStreamEntryIndex, endStreamEntryIndex := s.convertIDToIndexInEntry(streamKey, startID, endID)
+
+	out := make([]RangeEntry, 0, endStreamEntryIndex-startStreamEntryIndex)
+
+	for i := startStreamEntryIndex; i < endStreamEntryIndex; i++ {
+		entry := stream.Entries[i]
+		entryValsLen := len(entry.Values)
+
+		flatValues := make([]string, 0, entryValsLen*2) //*2 since both key and value are needed
+		for k, v := range entry.Values {
+			flatValues = append(flatValues, k, v)
+		}
+		out = append(out, RangeEntry{ID: entry.ID, Values: flatValues})
+	}
+	return out
+}
+
+func (s *Store) convertIDToIndexInEntry(streamKey, start, end string) (int, int) {
+	stream, exists := s.streams[streamKey]
+	if !exists {
+		return 0, 0
+	}
+	entries := stream.Entries
+
+	startID, _ := slices.BinarySearchFunc(entries, start, func(entry streamEntry, target string) int {
+		return compareStreamIDs(entry.ID, target)
+	})
+	endID, found := slices.BinarySearchFunc(entries, end, func(entry streamEntry, target string) int {
+		return compareStreamIDs(entry.ID, target)
+	})
+
+	if found {
+		endID++ // XRange is inclusive
+	}
+	return startID, endID
+}
+
+func compareStreamIDs(id1, id2 string) int {
+	ms1, sq1, _ := convertID(id1)
+	ms2, sq2, _ := convertID(id2)
+
+	if ms1 != ms2 {
+		return cmp.Compare(ms1, ms2)
+	}
+	return cmp.Compare(sq1, sq2)
 }

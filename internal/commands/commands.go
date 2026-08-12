@@ -33,8 +33,31 @@ func NewHandler(conn net.Conn, store *store.Store) *Handler {
 		"blpop":  h.blpopCmd,
 		"type":   h.typeCmd,
 		"xadd":   h.xaddCmd,
+		"xrange": h.xrangeCmd,
 	}
 	return h
+}
+
+func (h *Handler) xrangeCmd(args []string) {
+	if len(args) < 3 {
+		return // TODO: specify error
+	}
+	data := h.store.XRange(args[0], args[1], args[2])
+	fmt.Println(data)
+	response := fmt.Sprintf("*%d\r\n", len(data))
+	for _, rangeEntry := range data {
+		mapLenStr := "*2\r\n"
+		keyStr := fmt.Sprintf("$%d\r\n%s\r\n", len(rangeEntry.ID), rangeEntry.ID)
+		valsStr := "*2\r\n"
+		for _, valStr := range rangeEntry.Values {
+			valsStr += fmt.Sprintf("$%d\r\n%s\r\n", len(valStr), valStr)
+		}
+
+		response = response + mapLenStr + keyStr + valsStr
+	}
+
+	// fmt.Println(response)
+	fmt.Fprint(h.conn, response)
 }
 
 func (h *Handler) xaddCmd(args []string) {

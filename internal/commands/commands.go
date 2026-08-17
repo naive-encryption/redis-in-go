@@ -34,8 +34,45 @@ func NewHandler(conn net.Conn, store *store.Store) *Handler {
 		"type":   h.typeCmd,
 		"xadd":   h.xaddCmd,
 		"xrange": h.xrangeCmd,
+		"xread":  h.xreadCmd,
 	}
 	return h
+}
+
+func (h *Handler) xreadCmd(args []string) {
+	if len(args) < 3 {
+		return // TODO: specify error
+	}
+
+	streamKeys := make([]string, 0, (len(args)-1)/2)
+	for i := 1; i <= (len(args)-1)/2; i++ {
+		streamKeys = append(streamKeys, args[i])
+	}
+	streamEntryIDs := make([]string, 0, (len(args)-1)/2)
+	for i := (len(args) - 1) / 2; i < len(args); i++ {
+		streamEntryIDs = append(streamEntryIDs, args[i])
+	}
+
+	data := h.store.XRead(streamKeys, streamEntryIDs)
+	response := fmt.Sprintf("*%d\r\n", len(data))
+	for _, readEntry := range data {
+		readEntryLenLine := "*2\r\n"
+		readEntryIDLine := fmt.Sprintf("$%d\r\n%s\r\n", len(readEntry.StreamKey), readEntry.StreamKey)
+		readEntryValuesLenLine := fmt.Sprintf("*%d\r\n", len(readEntry.Values))
+		readEntryValuesLine := ""
+		for _, readEntryValue := range readEntry.Values {
+			mapLenStr := "*2\r\n"
+			keyStr := fmt.Sprintf("$%d\r\n%s\r\n", len(readEntryValue.ID), readEntryValue.ID)
+			valsStr := "*2\r\n"
+			for _, valStr := range readEntryValue.Values {
+				valsStr += fmt.Sprintf("$%d\r\n%s\r\n", len(valStr), valStr)
+			}
+
+			readEntryValuesLine = readEntryValuesLine + mapLenStr + keyStr + valsStr
+		}
+		response = response + readEntryLenLine + readEntryIDLine + readEntryValuesLenLine + readEntryValuesLine
+	}
+	fmt.Fprint(h.conn, response)
 }
 
 func (h *Handler) xrangeCmd(args []string) {
@@ -43,7 +80,6 @@ func (h *Handler) xrangeCmd(args []string) {
 		return // TODO: specify error
 	}
 	data := h.store.XRange(args[0], args[1], args[2])
-	fmt.Println(data)
 	response := fmt.Sprintf("*%d\r\n", len(data))
 	for _, rangeEntry := range data {
 		mapLenStr := "*2\r\n"

@@ -368,7 +368,7 @@ func (s *Store) XRange(streamKey string, startID, endID string) []RangeEntry {
 	if endID == "+" {
 		endID = s.streams[streamKey].Entries[len(s.streams[streamKey].Entries)-1].ID
 	}
-	startStreamEntryIndex, endStreamEntryIndex := s.convertIDToIndexInEntry(streamKey, startID, endID)
+	startStreamEntryIndex, endStreamEntryIndex := s.convertIDToIndexInEntryForXRange(streamKey, startID, endID)
 
 	out := make([]RangeEntry, 0, endStreamEntryIndex-startStreamEntryIndex)
 
@@ -385,7 +385,7 @@ func (s *Store) XRange(streamKey string, startID, endID string) []RangeEntry {
 	return out
 }
 
-func (s *Store) convertIDToIndexInEntry(streamKey, start, end string) (int, int) {
+func (s *Store) convertIDToIndexInEntryForXRange(streamKey, start, end string) (int, int) {
 	stream, exists := s.streams[streamKey]
 	if !exists {
 		return 0, 0
@@ -413,4 +413,58 @@ func compareStreamIDs(id1, id2 string) int {
 		return cmp.Compare(ms1, ms2)
 	}
 	return cmp.Compare(sq1, sq2)
+}
+
+type ReadEntry struct {
+	StreamKey string
+	Values    []RangeEntry
+}
+
+func (s *Store) XRead(streamKeys []string, entryIDs []string) []ReadEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := make([]ReadEntry, 0, 100) // HACK:
+	for i, streamKey := range streamKeys {
+		_, ok := s.streams[streamKey]
+		if !ok {
+			return nil // TODO: specify the error
+		}
+
+		startIndex, found := s.convertIDToIndexInEntryForXRead(streamKey, entryIDs[i])
+		if found {
+			startIndex++
+		}
+
+		var re ReadEntry
+		re.StreamKey = streamKey
+		re.Values = make([]RangeEntry, 0, len(s.streams[streamKey].Entries)-1-startIndex)
+
+		for i := startIndex; i < len(s.streams[streamKey].Entries); i++ {
+
+			streamEntryID := s.streams[streamKey].Entries[i].ID
+			streamEntryLen := len(s.streams[streamKey].Entries[i].Values)
+			streamEntryValues := make([]string, 0, streamEntryLen*2) // *2 since we need both key and valu
+			for k, v := range s.streams[streamKey].Entries[i].Values {
+				streamEntryValues = append(streamEntryValues, k, v)
+			}
+
+			re.Values = append(re.Values, RangeEntry{ID: streamEntryID, Values: streamEntryValues})
+		}
+		out = append(out, re)
+	}
+	return out
+}
+
+func (s *Store) convertIDToIndexInEntryForXRead(streamKey, id string) (int, bool) {
+	stream, exists := s.streams[streamKey]
+	if !exists {
+		return 0, false
+	}
+	entries := stream.Entries
+
+	indexEntry, found := slices.BinarySearchFunc(entries, id, func(entry streamEntry, target string) int {
+		return compareStreamIDs(entry.ID, target)
+	})
+	return indexEntry, found
 }

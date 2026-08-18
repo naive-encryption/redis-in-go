@@ -256,7 +256,6 @@ func (s *Store) Type(listKey string) string {
 
 func (s *Store) XAdd(streamKey string, id string, values map[string]string) (string, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	stream, ok := s.streams[streamKey]
 
@@ -268,6 +267,7 @@ func (s *Store) XAdd(streamKey string, id string, values map[string]string) (str
 
 	finalID, err := resolveStreamID(id, lastID)
 	if err != nil {
+		s.mu.Unlock()
 		return "", err
 	}
 
@@ -279,6 +279,18 @@ func (s *Store) XAdd(streamKey string, id string, values map[string]string) (str
 		stream.Entries = append(stream.Entries, entry)
 		s.streams[streamKey] = stream
 	}
+
+	waiters := s.blockingClients[streamKey]
+	s.blockingClients[streamKey] = nil
+	s.mu.Unlock()
+
+	for _, ch := range waiters {
+		select {
+		case ch <- finalID:
+		default:
+		}
+	}
+
 	return finalID, nil
 }
 
@@ -420,40 +432,107 @@ type ReadEntry struct {
 	Values    []RangeEntry
 }
 
-func (s *Store) XRead(streamKeys []string, entryIDs []string) []ReadEntry {
+func (s *Store) XRead(streamKeys []string, entryIDs []string, blockForMs int) []ReadEntry {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
-	out := make([]ReadEntry, 0, 100) // HACK:
-	for i, streamKey := range streamKeys {
-		_, ok := s.streams[streamKey]
-		if !ok {
-			return nil // TODO: specify the error
-		}
-
-		startIndex, found := s.convertIDToIndexInEntryForXRead(streamKey, entryIDs[i])
-		if found {
-			startIndex++
-		}
-
-		var re ReadEntry
-		re.StreamKey = streamKey
-		re.Values = make([]RangeEntry, 0, len(s.streams[streamKey].Entries)-1-startIndex)
-
-		for i := startIndex; i < len(s.streams[streamKey].Entries); i++ {
-
-			streamEntryID := s.streams[streamKey].Entries[i].ID
-			streamEntryLen := len(s.streams[streamKey].Entries[i].Values)
-			streamEntryValues := make([]string, 0, streamEntryLen*2) // *2 since we need both key and valu
-			for k, v := range s.streams[streamKey].Entries[i].Values {
-				streamEntryValues = append(streamEntryValues, k, v)
+	startIDs := make([]string, len(entryIDs))
+	for i, key := range streamKeys {
+		if entryIDs[i] == "$" {
+			if stream, exists := s.streams[key]; exists && len(stream.Entries) > 0 {
+				startIDs[i] = stream.Entries[len(stream.Entries)-1].ID
+			} else {
+				startIDs[i] = "0-0"
 			}
-
-			re.Values = append(re.Values, RangeEntry{ID: streamEntryID, Values: streamEntryValues})
+		} else {
+			startIDs[i] = entryIDs[i]
 		}
-		out = append(out, re)
 	}
-	return out
+
+	collectEntries := func() []ReadEntry {
+		var out []ReadEntry
+		for i, streamKey := range streamKeys {
+			stream, ok := s.streams[streamKey]
+			if !ok {
+				continue
+			}
+			startIndex, found := s.convertIDToIndexInEntryForXRead(streamKey, startIDs[i])
+			if found {
+				startIndex++
+			}
+			if startIndex >= len(stream.Entries) {
+				continue
+			}
+			var re ReadEntry
+			re.StreamKey = streamKey
+			re.Values = make([]RangeEntry, 0, len(stream.Entries)-startIndex)
+
+			for j := startIndex; j < len(stream.Entries); j++ {
+				entry := stream.Entries[j]
+				streamEntryValues := make([]string, 0, len(entry.Values))
+				for k, v := range entry.Values {
+					streamEntryValues = append(streamEntryValues, k, v)
+				}
+				re.Values = append(re.Values, RangeEntry{ID: entry.ID, Values: streamEntryValues})
+			}
+			out = append(out, re)
+		}
+		return out
+	}
+
+	if entries := collectEntries(); len(entries) > 0 {
+		s.mu.Unlock()
+		return entries
+	}
+
+	if blockForMs < 0 {
+		s.mu.Unlock()
+		return nil
+	}
+
+	ch := make(chan string, 1)
+	for _, streamKey := range streamKeys {
+		s.blockingClients[streamKey] = append(s.blockingClients[streamKey], ch)
+	}
+
+	s.mu.Unlock()
+
+	var timeoutChan <-chan time.Time
+	if blockForMs > 0 {
+		timeoutChan = time.After(time.Duration(blockForMs) * time.Millisecond)
+	}
+
+	select {
+	case <-ch:
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.removeWaiterFromKeys(streamKeys, ch)
+		return collectEntries()
+
+	case <-timeoutChan:
+		s.mu.Lock()
+		s.removeWaiterFromKeys(streamKeys, ch)
+
+		select {
+		case <-ch:
+			defer s.mu.Unlock()
+			return collectEntries()
+		default:
+			s.mu.Unlock()
+			return nil
+		}
+	}
+}
+
+func (s *Store) removeWaiterFromKeys(streamKeys []string, ch chan string) {
+	for _, key := range streamKeys {
+		clients := s.blockingClients[key]
+		for i, clientCh := range clients {
+			if clientCh == ch {
+				s.blockingClients[key] = append(clients[:i], clients[i+1:]...)
+				break
+			}
+		}
+	}
 }
 
 func (s *Store) convertIDToIndexInEntryForXRead(streamKey, id string) (int, bool) {

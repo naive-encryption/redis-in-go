@@ -44,16 +44,39 @@ func (h *Handler) xreadCmd(args []string) {
 		return // TODO: specify error
 	}
 
-	streamKeys := make([]string, 0, (len(args)-1)/2)
-	for i := 1; i <= (len(args)-1)/2; i++ {
-		streamKeys = append(streamKeys, args[i])
-	}
-	streamEntryIDs := make([]string, 0, (len(args)-1)/2)
-	for i := (len(args) - 1) / 2; i < len(args); i++ {
-		streamEntryIDs = append(streamEntryIDs, args[i])
+	var blockForMs int
+	if args[0] == "block" {
+		ms, err := strconv.Atoi(args[1])
+		if err != nil {
+			fmt.Println(err)
+		}
+		blockForMs = ms
 	}
 
-	data := h.store.XRead(streamKeys, streamEntryIDs)
+	streamWordIndex := 0
+	for index, word := range args {
+		if word == "streams" {
+			streamWordIndex = index
+		}
+	}
+
+	keysAndIDs := args[streamWordIndex:]
+	numStreams := (len(keysAndIDs) - 1) / 2
+	streamKeys := make([]string, numStreams)
+	streamEntryIDs := make([]string, numStreams)
+
+	for i := 0; i < numStreams; i++ {
+		streamKeys[i] = keysAndIDs[i+1]
+		streamEntryIDs[i] = keysAndIDs[1+numStreams+i]
+	}
+	fmt.Println(streamKeys)
+	fmt.Println(streamEntryIDs)
+
+	data := h.store.XRead(streamKeys, streamEntryIDs, blockForMs)
+	if data == nil {
+		fmt.Fprint(h.conn, "*-1\r\n")
+		return
+	}
 	response := fmt.Sprintf("*%d\r\n", len(data))
 	for _, readEntry := range data {
 		readEntryLenLine := "*2\r\n"

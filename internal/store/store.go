@@ -547,3 +547,28 @@ func (s *Store) convertIDToIndexInEntryForXRead(streamKey, id string) (int, bool
 	})
 	return indexEntry, found
 }
+
+func (s *Store) INCR(key string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.data[key]
+	if !ok {
+		entry.value = "1"
+		s.data[key] = entry
+		return 1, nil
+	}
+	if !entry.expiresAt.IsZero() && time.Now().After(entry.expiresAt) {
+		delete(s.data, key)
+		return 0, errors.New("key expired")
+	}
+
+	val, err := strconv.Atoi(entry.value)
+	if err != nil {
+		return 0, err
+	}
+	val++
+	entry.value = strconv.Itoa(val)
+	s.data[key] = entry
+
+	return val, nil
+}

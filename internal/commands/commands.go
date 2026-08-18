@@ -35,8 +35,24 @@ func NewHandler(conn net.Conn, store *store.Store) *Handler {
 		"xadd":   h.xaddCmd,
 		"xrange": h.xrangeCmd,
 		"xread":  h.xreadCmd,
+		"incr":   h.incrCmd,
 	}
 	return h
+}
+
+func (h *Handler) incrCmd(args []string) {
+	if len(args) == 0 {
+		return // TODO: specify error
+	}
+	data, err := h.store.INCR(args[0])
+	if err != nil {
+		response := "-ERR value is not an integer or out of range\r\n"
+		fmt.Fprint(h.conn, response)
+		return
+	}
+
+	response := fmt.Sprintf(":%d\r\n", data)
+	fmt.Fprint(h.conn, response)
 }
 
 func (h *Handler) xreadCmd(args []string) {

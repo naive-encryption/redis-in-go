@@ -12,10 +12,20 @@ import (
 	"redis-in-go/internal/store"
 )
 
+type CommandQueueEntry struct {
+	cmd  string
+	args []string
+}
+
 type Handler struct {
 	conn     net.Conn
 	builtIns map[string]func(args []string)
 	store    *store.Store
+
+	cmdQueue          []CommandQueueEntry
+	isMultiActive     bool
+	isResponseQueued  bool
+	cmdQueueResponses []string
 }
 
 func NewHandler(conn net.Conn, store *store.Store) *Handler {
@@ -36,8 +46,48 @@ func NewHandler(conn net.Conn, store *store.Store) *Handler {
 		"xrange": h.xrangeCmd,
 		"xread":  h.xreadCmd,
 		"incr":   h.incrCmd,
+		"multi":  h.multiCmd,
+		"exec":   h.execCmd,
 	}
 	return h
+}
+
+func (h *Handler) execCmd(args []string) {
+	if !h.isMultiActive {
+		response := "-ERR EXEC without MULTI\r\n"
+		h.SendResponse(response)
+		return
+	}
+
+	if len(h.cmdQueue) == 0 {
+		response := "*0\r\n"
+		h.SendResponse(response)
+		h.isMultiActive = false
+		return
+	}
+
+	h.isResponseQueued = true
+	h.isMultiActive = false
+	for _, commandEntry := range h.cmdQueue {
+		h.executeBuiltIn(commandEntry.cmd, commandEntry.args)
+	}
+	h.cmdQueueResponses = nil
+	h.isResponseQueued = false
+
+	arrayLenght := fmt.Sprintf("*%d\r\n", len(h.cmdQueueResponses))
+	var sb strings.Builder
+	sb.Write([]byte(arrayLenght))
+	for _, cmdResponse := range h.cmdQueueResponses {
+		sb.Write([]byte(cmdResponse))
+	}
+	response := sb.String()
+	h.SendResponse(response)
+}
+
+func (h *Handler) multiCmd(args []string) {
+	response := "+OK\r\n"
+	h.SendResponse(response)
+	h.isMultiActive = true
 }
 
 func (h *Handler) incrCmd(args []string) {
@@ -47,12 +97,12 @@ func (h *Handler) incrCmd(args []string) {
 	data, err := h.store.INCR(args[0])
 	if err != nil {
 		response := "-ERR value is not an integer or out of range\r\n"
-		fmt.Fprint(h.conn, response)
+		h.SendResponse(response)
 		return
 	}
 
 	response := fmt.Sprintf(":%d\r\n", data)
-	fmt.Fprint(h.conn, response)
+	h.SendResponse(response)
 }
 
 func (h *Handler) xreadCmd(args []string) {
@@ -64,7 +114,7 @@ func (h *Handler) xreadCmd(args []string) {
 	if args[0] == "block" {
 		ms, err := strconv.Atoi(args[1])
 		if err != nil {
-			fmt.Println(err)
+			fmt.Println(err) // TODO: make error a response
 		}
 		blockForMs = ms
 	}
@@ -85,12 +135,11 @@ func (h *Handler) xreadCmd(args []string) {
 		streamKeys[i] = keysAndIDs[i+1]
 		streamEntryIDs[i] = keysAndIDs[1+numStreams+i]
 	}
-	fmt.Println(streamKeys)
-	fmt.Println(streamEntryIDs)
 
 	data := h.store.XRead(streamKeys, streamEntryIDs, blockForMs)
 	if data == nil {
-		fmt.Fprint(h.conn, "*-1\r\n")
+		response := "*-1\r\n"
+		h.SendResponse(response)
 		return
 	}
 	response := fmt.Sprintf("*%d\r\n", len(data))
@@ -111,7 +160,7 @@ func (h *Handler) xreadCmd(args []string) {
 		}
 		response = response + readEntryLenLine + readEntryIDLine + readEntryValuesLenLine + readEntryValuesLine
 	}
-	fmt.Fprint(h.conn, response)
+	h.SendResponse(response)
 }
 
 func (h *Handler) xrangeCmd(args []string) {
@@ -131,8 +180,7 @@ func (h *Handler) xrangeCmd(args []string) {
 		response = response + mapLenStr + keyStr + valsStr
 	}
 
-	// fmt.Println(response)
-	fmt.Fprint(h.conn, response)
+	h.SendResponse(response)
 }
 
 func (h *Handler) xaddCmd(args []string) {
@@ -143,11 +191,11 @@ func (h *Handler) xaddCmd(args []string) {
 	response, err := h.store.XAdd(args[0], args[1], values)
 	if err != nil {
 		response = fmt.Sprintf("-%s\r\n", err.Error())
-		fmt.Fprint(h.conn, response)
+		h.SendResponse(response)
 		return
 	}
 	response = fmt.Sprintf("$%d\r\n%s\r\n", len(response), response)
-	fmt.Fprint(h.conn, response)
+	h.SendResponse(response)
 }
 
 func (h *Handler) typeCmd(args []string) {
@@ -155,7 +203,7 @@ func (h *Handler) typeCmd(args []string) {
 		return
 	}
 	response := fmt.Sprintf("+%s\r\n", h.store.Type(args[0]))
-	fmt.Fprint(h.conn, response)
+	h.SendResponse(response)
 }
 
 func (h *Handler) blpopCmd(args []string) {
@@ -166,16 +214,17 @@ func (h *Handler) blpopCmd(args []string) {
 	listKey := args[0]
 	timeoutSeconds, err := strconv.ParseFloat(args[1], 64)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println(err) // TODO: make error a response
 	}
 	timeout := time.Duration(timeoutSeconds * float64(time.Second))
 	val, ok := h.store.BLPop(listKey, timeout)
 	if !ok {
-		fmt.Fprintf(h.conn, "*-1\r\n")
+		response := "*-1\r\n"
+		h.SendResponse(response)
 		return
 	}
 	response := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(listKey), listKey, len(val), val)
-	fmt.Fprint(h.conn, response)
+	h.SendResponse(response)
 }
 
 func (h *Handler) lpopCmd(args []string) {
@@ -183,68 +232,74 @@ func (h *Handler) lpopCmd(args []string) {
 	if len(args) > 1 {
 		val, err := strconv.Atoi(args[1])
 		if err != nil {
-			fmt.Println(err)
+			fmt.Println(err) // TODO: make error a response
 		}
 		poppedElements = h.store.LPop(args[0], val)
 	} else {
 		poppedElements = h.store.LPop(args[0], 1)
 	}
-	fmt.Fprintf(h.conn, poppedElements)
+	h.SendResponse(poppedElements)
 }
 
 func (h *Handler) llenCmd(args []string) {
 	len := h.store.LLen(args[0])
-	_, err := fmt.Fprintf(h.conn, ":%d\r\n", len)
-	if err != nil {
-		fmt.Println(err)
-	}
+	response := fmt.Sprintf(":%d\r\n", len)
+	h.SendResponse(response)
 }
 
 func (h *Handler) lpushCmd(args []string) {
 	length := h.store.LPush(args[0], args[1:]...)
 	if length > 0 {
-		fmt.Fprintf(h.conn, ":%d\r\n", length)
+		response := fmt.Sprintf(":%d\r\n", length)
+		h.SendResponse(response)
 	}
 }
 
 func (h *Handler) lrangeCmd(args []string) {
 	if len(args) < 3 {
-		h.conn.Write([]byte("*0\r\n"))
+		response := "*0\r\n"
+		h.SendResponse(response)
 	}
 
 	start, err := strconv.Atoi(args[1])
 	if err != nil {
-		h.conn.Write([]byte("*0\r\n"))
+		response := "*0\r\n"
+		h.SendResponse(response)
 	}
 
 	stop, err := strconv.Atoi(args[2])
 	if err != nil {
-		h.conn.Write([]byte("*0\r\n"))
+		response := "*0\r\n"
+		h.SendResponse(response)
 	}
 
 	out := h.store.LRange(args[0], start, stop)
 
 	if out == "" {
-		h.conn.Write([]byte("*0\r\n"))
+		response := "*0\r\n"
+		h.SendResponse(response)
 		return
 	}
 
-	fmt.Fprint(h.conn, out)
+	h.SendResponse(out)
 }
 
 func (h *Handler) rpushCmd(args []string) {
 	length := h.store.RPush(args[0], args[1:]...)
 	if length > 0 {
-		h.conn.Write([]byte(fmt.Sprintf(":%d\r\n", length)))
+		response := fmt.Sprintf(":%d\r\n", length)
+		h.SendResponse(response)
 	}
 }
 
 func (h *Handler) pingCmd(args []string) {
-	h.conn.Write([]byte("+PONG\r\n"))
+	response := "+PONG\r\n"
+	h.SendResponse(response)
 }
 
 func (h *Handler) echoCmd(args []string) {
-	h.conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(args[0]), args[0])))
+	response := fmt.Sprintf("$%d\r\n%s\r\n", len(args[0]), args[0])
+	h.SendResponse(response)
 }
 
 func (h *Handler) setCmd(args []string) {
@@ -255,7 +310,8 @@ func (h *Handler) setCmd(args []string) {
 			if len(args) > 3 {
 				val, err := strconv.Atoi(args[3])
 				if err != nil {
-					h.conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
+					response := "-ERR value is not an integer or out of range\r\n"
+					h.SendResponse(response)
 					return
 				}
 				ttl = time.Duration(val) * time.Second
@@ -264,7 +320,8 @@ func (h *Handler) setCmd(args []string) {
 			if len(args) > 3 {
 				val, err := strconv.Atoi(args[3])
 				if err != nil {
-					h.conn.Write([]byte("-ERR value is not an integer or out of range\r\n"))
+					response := "-ERR value is not an integer or out of range\r\n"
+					h.SendResponse(response)
 					return
 				}
 				ttl = time.Duration(val) * time.Millisecond
@@ -272,16 +329,19 @@ func (h *Handler) setCmd(args []string) {
 		}
 	}
 	h.store.Set(args[0], args[1], ttl) // TODO: check for nil
-	h.conn.Write([]byte("+OK\r\n"))
+	response := "+OK\r\n"
+	h.SendResponse(response)
 }
 
 func (h *Handler) getCmd(args []string) {
 	val, err := h.store.Get(args[0])
 	if err != nil {
-		h.conn.Write([]byte("$-1\r\n"))
+		response := "$-1\r\n"
+		h.SendResponse(response)
 		return
 	}
-	h.conn.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(val), val)))
+	response := fmt.Sprintf("$%d\r\n%s\r\n", len(val), val)
+	h.SendResponse(response)
 }
 
 func (h *Handler) handleCommands(commands []string) {
@@ -292,6 +352,13 @@ func (h *Handler) executeBuiltIn(cmd string, args []string) {
 	builtInFunc, ok := h.builtIns[cmd]
 	if !ok {
 		fmt.Println("not a built-in")
+	}
+	if h.isMultiActive && cmd != "exec" {
+		newEntry := CommandQueueEntry{cmd: cmd, args: args}
+		h.cmdQueue = append(h.cmdQueue, newEntry)
+		response := "+QUEUED\r\n"
+		h.SendResponse(response)
+		return
 	}
 
 	builtInFunc(args)
@@ -314,5 +381,16 @@ func (h *Handler) HandleIncomingStream(conn net.Conn) {
 		}
 
 		h.handleCommands(cmds)
+	}
+}
+
+func (h *Handler) SendResponse(response string) {
+	if h.isResponseQueued {
+		h.cmdQueueResponses = append(h.cmdQueueResponses, response)
+	} else {
+		_, err := fmt.Fprint(h.conn, response)
+		if err != nil {
+			fmt.Println(err)
+		}
 	}
 }

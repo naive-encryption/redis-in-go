@@ -26,30 +26,66 @@ type Handler struct {
 	isMultiActive     bool
 	isResponseQueued  bool
 	cmdQueueResponses []string
+	WatchedKeys       map[string]uint64
 }
 
 func NewHandler(conn net.Conn, store *store.Store) *Handler {
 	h := &Handler{conn: conn, store: store}
+	h.WatchedKeys = make(map[string]uint64)
 	h.builtIns = map[string]func(args []string){
-		"echo":   h.echoCmd,
-		"ping":   h.pingCmd,
-		"set":    h.setCmd,
-		"get":    h.getCmd,
-		"rpush":  h.rpushCmd,
-		"lrange": h.lrangeCmd,
-		"lpush":  h.lpushCmd,
-		"llen":   h.llenCmd,
-		"lpop":   h.lpopCmd,
-		"blpop":  h.blpopCmd,
-		"type":   h.typeCmd,
-		"xadd":   h.xaddCmd,
-		"xrange": h.xrangeCmd,
-		"xread":  h.xreadCmd,
-		"incr":   h.incrCmd,
-		"multi":  h.multiCmd,
-		"exec":   h.execCmd,
+		"echo":    h.echoCmd,
+		"ping":    h.pingCmd,
+		"set":     h.setCmd,
+		"get":     h.getCmd,
+		"rpush":   h.rpushCmd,
+		"lrange":  h.lrangeCmd,
+		"lpush":   h.lpushCmd,
+		"llen":    h.llenCmd,
+		"lpop":    h.lpopCmd,
+		"blpop":   h.blpopCmd,
+		"type":    h.typeCmd,
+		"xadd":    h.xaddCmd,
+		"xrange":  h.xrangeCmd,
+		"xread":   h.xreadCmd,
+		"incr":    h.incrCmd,
+		"multi":   h.multiCmd,
+		"exec":    h.execCmd,
+		"discard": h.discardCmd,
+		"watch":   h.watchCmd,
+		"unwatch": h.unwatchCmd,
 	}
 	return h
+}
+
+func (h *Handler) unwatchCmd(args []string) {
+	h.discardWatch()
+	response := "+OK\r\n"
+	h.SendResponse(response)
+}
+
+func (h *Handler) watchCmd(args []string) {
+	h.store.Watch(h.WatchedKeys, args)
+	response := "+OK\r\n"
+	h.SendResponse(response)
+}
+
+func (h *Handler) discardWatch() {
+	h.isMultiActive = false
+	h.isResponseQueued = false
+	h.cmdQueueResponses = h.cmdQueueResponses[:0]
+	h.cmdQueue = h.cmdQueue[:0]
+	h.WatchedKeys = make(map[string]uint64)
+}
+
+func (h *Handler) discardCmd(args []string) {
+	if !h.isMultiActive {
+		response := "-ERR DISCARD without MULTI\r\n"
+		h.SendResponse(response)
+		return
+	}
+	h.discardWatch()
+	response := "+OK\r\n"
+	h.SendResponse(response)
 }
 
 func (h *Handler) execCmd(args []string) {
@@ -66,12 +102,19 @@ func (h *Handler) execCmd(args []string) {
 		return
 	}
 
+	isChanged := h.store.CheckWatchedKeysForChange(h.WatchedKeys)
+	if isChanged {
+		h.discardWatch()
+		response := "*-1\r\n"
+		h.SendResponse(response)
+		return
+	}
+
 	h.isResponseQueued = true
 	h.isMultiActive = false
 	for _, commandEntry := range h.cmdQueue {
 		h.executeBuiltIn(commandEntry.cmd, commandEntry.args)
 	}
-	h.cmdQueueResponses = nil
 	h.isResponseQueued = false
 
 	arrayLenght := fmt.Sprintf("*%d\r\n", len(h.cmdQueueResponses))
@@ -80,6 +123,7 @@ func (h *Handler) execCmd(args []string) {
 	for _, cmdResponse := range h.cmdQueueResponses {
 		sb.Write([]byte(cmdResponse))
 	}
+	h.cmdQueueResponses = h.cmdQueueResponses[:0]
 	response := sb.String()
 	h.SendResponse(response)
 }
@@ -353,7 +397,12 @@ func (h *Handler) executeBuiltIn(cmd string, args []string) {
 	if !ok {
 		fmt.Println("not a built-in")
 	}
-	if h.isMultiActive && cmd != "exec" {
+	if h.isMultiActive && cmd == "watch" {
+		response := "-ERR WATCH inside MULTI is not allowed\r\n"
+		h.SendResponse(response)
+		return
+	}
+	if h.isMultiActive && cmd != "exec" && cmd != "discard" {
 		newEntry := CommandQueueEntry{cmd: cmd, args: args}
 		h.cmdQueue = append(h.cmdQueue, newEntry)
 		response := "+QUEUED\r\n"

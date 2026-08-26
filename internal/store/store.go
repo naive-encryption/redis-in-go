@@ -12,6 +12,7 @@ import (
 	"time"
 )
 
+// TODO: unify entry initialization under one funnction
 type streamEntry struct {
 	ID     string
 	Values map[string]string
@@ -24,14 +25,16 @@ type Stream struct {
 type entry struct {
 	value     string
 	expiresAt time.Time
+	version   uint64
 }
 
 type Store struct {
-	mu              sync.Mutex
-	data            map[string]entry
-	elements        map[string][]string
-	blockingClients map[string][]chan string
-	streams         map[string]Stream
+	mu       sync.Mutex
+	data     map[string]entry
+	elements map[string][]string
+	streams  map[string]Stream
+
+	blockingClients map[string][]chan string // WARN: might be a concurrency issue
 }
 
 func NewStore() *Store {
@@ -46,7 +49,18 @@ func NewStore() *Store {
 func (s *Store) Set(key, value string, ttl time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e := entry{value: value}
+	e, exists := s.data[key]
+	if !exists {
+		newEntry := entry{value: value, version: 1}
+		if ttl > 0 {
+			newEntry.expiresAt = time.Now().Add(ttl)
+		}
+		s.data[key] = newEntry
+		return
+	}
+
+	e.value = value
+	e.version++
 	if ttl > 0 {
 		e.expiresAt = time.Now().Add(ttl)
 	}
@@ -554,6 +568,7 @@ func (s *Store) INCR(key string) (int, error) {
 	entry, ok := s.data[key]
 	if !ok {
 		entry.value = "1"
+		entry.version = 1
 		s.data[key] = entry
 		return 1, nil
 	}
@@ -568,7 +583,35 @@ func (s *Store) INCR(key string) (int, error) {
 	}
 	val++
 	entry.value = strconv.Itoa(val)
+	entry.version++
 	s.data[key] = entry
 
 	return val, nil
+}
+
+func (s *Store) Watch(watchedKeys map[string]uint64, keys []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, key := range keys {
+		e, ok := s.data[key]
+		if !ok {
+			watchedKeys[key] = 0 // nothing else can set version to 0, so 0 in this case means key shouldn't exist upon execCmd call
+			return
+		}
+		watchedKeys[key] = e.version
+	}
+}
+
+func (s *Store) CheckWatchedKeysForChange(watchedKeys map[string]uint64) bool { // call with isChanged var name
+	for k, version := range watchedKeys {
+		key, exists := s.data[k]
+		if !exists {
+			continue
+		}
+		if key.version != version {
+			return true
+		}
+	}
+	return false
 }

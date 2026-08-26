@@ -1,15 +1,23 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"net"
+	"strconv"
 
 	"redis-in-go/internal/commands"
 	"redis-in-go/internal/store"
 )
 
 func main() {
-	ln, err := net.Listen("tcp", ":6379")
+	port := flag.Int("port", 6379, "Port number")
+
+	flag.Parse()
+
+	portProvidedParsed := ":" + strconv.Itoa(*port)
+
+	ln, err := net.Listen("tcp", portProvidedParsed)
 	if err != nil {
 		panic(err)
 	}

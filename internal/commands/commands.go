@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"redis-in-go/internal/info"
 	"redis-in-go/internal/resp"
 	"redis-in-go/internal/store"
 )
@@ -29,32 +30,76 @@ type Handler struct {
 	WatchedKeys       map[string]uint64
 }
 
+func InitHandler(conn net.Conn, store *store.Store) *Handler {
+	h := NewHandler(conn, store)
+	return h
+}
+
 func NewHandler(conn net.Conn, store *store.Store) *Handler {
 	h := &Handler{conn: conn, store: store}
 	h.WatchedKeys = make(map[string]uint64)
 	h.builtIns = map[string]func(args []string){
-		"echo":    h.echoCmd,
-		"ping":    h.pingCmd,
-		"set":     h.setCmd,
-		"get":     h.getCmd,
-		"rpush":   h.rpushCmd,
-		"lrange":  h.lrangeCmd,
-		"lpush":   h.lpushCmd,
-		"llen":    h.llenCmd,
-		"lpop":    h.lpopCmd,
-		"blpop":   h.blpopCmd,
-		"type":    h.typeCmd,
-		"xadd":    h.xaddCmd,
-		"xrange":  h.xrangeCmd,
-		"xread":   h.xreadCmd,
-		"incr":    h.incrCmd,
-		"multi":   h.multiCmd,
-		"exec":    h.execCmd,
-		"discard": h.discardCmd,
-		"watch":   h.watchCmd,
-		"unwatch": h.unwatchCmd,
+		"echo":     h.echoCmd,
+		"ping":     h.pingCmd,
+		"set":      h.setCmd,
+		"get":      h.getCmd,
+		"rpush":    h.rpushCmd,
+		"lrange":   h.lrangeCmd,
+		"lpush":    h.lpushCmd,
+		"llen":     h.llenCmd,
+		"lpop":     h.lpopCmd,
+		"blpop":    h.blpopCmd,
+		"type":     h.typeCmd,
+		"xadd":     h.xaddCmd,
+		"xrange":   h.xrangeCmd,
+		"xread":    h.xreadCmd,
+		"incr":     h.incrCmd,
+		"multi":    h.multiCmd,
+		"exec":     h.execCmd,
+		"discard":  h.discardCmd,
+		"watch":    h.watchCmd,
+		"unwatch":  h.unwatchCmd,
+		"info":     h.infoCmd,
+		"replconf": h.replconfCmd,
+		"psync":    h.psyncCmd,
 	}
 	return h
+}
+
+func (h *Handler) psyncCmd(args []string) {
+	if len(args) < 2 {
+		return // not enough arguments
+	}
+	response := fmt.Sprintf("+FULLRESYNC %s %d\r\n", info.MasterReplID, info.MasterReplOffset)
+	h.SendResponse(response)
+}
+
+func (h *Handler) replconfCmd(args []string) {
+	response := "+OK\r\n"
+	h.SendResponse(response)
+}
+
+func (h *Handler) infoCmd(args []string) {
+	if len(args) == 0 {
+		// full response
+		return
+	}
+
+	response := ""
+
+	switch args[0] {
+	case "replication":
+		roleField := fmt.Sprintf("role:%s\r\n", info.Role)
+		masterReplIDField := fmt.Sprintf("master_replid:%s\r\n", info.MasterReplID)
+		masterReplOffsetField := fmt.Sprintf("master_repl_offset:%d\r\n", info.MasterReplOffset)
+
+		replicationResponse := roleField + masterReplIDField + masterReplOffsetField
+		response = response + fmt.Sprintf("$%d\r\n%s\r\n", len(replicationResponse), replicationResponse)
+		fmt.Println(response)
+	default:
+	}
+
+	h.SendResponse(response)
 }
 
 func (h *Handler) unwatchCmd(args []string) {

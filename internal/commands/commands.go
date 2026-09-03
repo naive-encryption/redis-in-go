@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"redis-in-go/internal/info"
@@ -18,10 +19,16 @@ type CommandQueueEntry struct {
 	args []string
 }
 
+type MasterNode struct {
+	Replicas map[string]net.Conn
+	Mu       sync.RWMutex
+}
+
 type Handler struct {
-	conn     net.Conn
-	builtIns map[string]func(args []string)
-	store    *store.Store
+	conn       net.Conn
+	MasterNode *MasterNode
+	builtIns   map[string]func(args []string)
+	store      *store.Store
 
 	cmdQueue          []CommandQueueEntry
 	isMultiActive     bool
@@ -30,30 +37,37 @@ type Handler struct {
 	WatchedKeys       map[string]uint64
 }
 
-func InitHandler(conn net.Conn, store *store.Store) *Handler {
-	h := NewHandler(conn, store)
+func InitHandler(conn net.Conn, store *store.Store, masterNode *MasterNode) *Handler {
+	h := NewHandler(conn, store, masterNode)
 	return h
 }
 
-func NewHandler(conn net.Conn, store *store.Store) *Handler {
-	h := &Handler{conn: conn, store: store}
+func InitMasterNode() *MasterNode {
+	masterNode := &MasterNode{
+		Replicas: make(map[string]net.Conn),
+	}
+	return masterNode
+}
+
+func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode) *Handler {
+	h := &Handler{conn: conn, store: store, MasterNode: masterNode}
 	h.WatchedKeys = make(map[string]uint64)
 	h.builtIns = map[string]func(args []string){
 		"echo":     h.echoCmd,
 		"ping":     h.pingCmd,
-		"set":      h.setCmd,
+		"set":      h.setCmd, // propagated
 		"get":      h.getCmd,
-		"rpush":    h.rpushCmd,
+		"rpush":    h.rpushCmd, // propagated
 		"lrange":   h.lrangeCmd,
-		"lpush":    h.lpushCmd,
+		"lpush":    h.lpushCmd, // propagated
 		"llen":     h.llenCmd,
-		"lpop":     h.lpopCmd,
-		"blpop":    h.blpopCmd,
+		"lpop":     h.lpopCmd,  // propagated
+		"blpop":    h.blpopCmd, // propagated
 		"type":     h.typeCmd,
-		"xadd":     h.xaddCmd,
+		"xadd":     h.xaddCmd, // propagated
 		"xrange":   h.xrangeCmd,
 		"xread":    h.xreadCmd,
-		"incr":     h.incrCmd,
+		"incr":     h.incrCmd, // propagated
 		"multi":    h.multiCmd,
 		"exec":     h.execCmd,
 		"discard":  h.discardCmd,
@@ -70,8 +84,20 @@ func (h *Handler) psyncCmd(args []string) {
 	if len(args) < 2 {
 		return // not enough arguments
 	}
+
+	h.MasterNode.Mu.Lock()
+	h.MasterNode.Replicas[h.conn.RemoteAddr().String()] = h.conn
+	h.MasterNode.Mu.Unlock()
+
 	response := fmt.Sprintf("+FULLRESYNC %s %d\r\n", info.MasterReplID, info.MasterReplOffset)
 	h.SendResponse(response)
+	emptyRDB := info.GetEmptyRDB()
+	header := fmt.Sprintf("$%d\r\n", len(emptyRDB))
+	h.SendResponse(header)
+	_, err := h.conn.Write(emptyRDB)
+	if err != nil {
+		fmt.Println("Failed to send RDB file:", err)
+	}
 }
 
 func (h *Handler) replconfCmd(args []string) {
@@ -98,8 +124,10 @@ func (h *Handler) infoCmd(args []string) {
 		fmt.Println(response)
 	default:
 	}
-
-	h.SendResponse(response)
+	_, err := h.conn.Write([]byte(response))
+	if err != nil {
+		fmt.Println("Failed to respond to info command:", err)
+	}
 }
 
 func (h *Handler) unwatchCmd(args []string) {
@@ -180,6 +208,7 @@ func (h *Handler) multiCmd(args []string) {
 }
 
 func (h *Handler) incrCmd(args []string) {
+	h.MasterNode.PropagateToReplicas("incr", args)
 	if len(args) == 0 {
 		return // TODO: specify error
 	}
@@ -273,6 +302,7 @@ func (h *Handler) xrangeCmd(args []string) {
 }
 
 func (h *Handler) xaddCmd(args []string) {
+	h.MasterNode.PropagateToReplicas("xadd", args)
 	values := make(map[string]string, len(args[2:]))
 	for i := 2; i < len(args)-1; i += 2 {
 		values[args[i]] = args[i+1]
@@ -296,6 +326,7 @@ func (h *Handler) typeCmd(args []string) {
 }
 
 func (h *Handler) blpopCmd(args []string) {
+	h.MasterNode.PropagateToReplicas("blpop", args)
 	if len(args) < 2 {
 		return
 	}
@@ -317,6 +348,7 @@ func (h *Handler) blpopCmd(args []string) {
 }
 
 func (h *Handler) lpopCmd(args []string) {
+	h.MasterNode.PropagateToReplicas("lpop", args)
 	poppedElements := ""
 	if len(args) > 1 {
 		val, err := strconv.Atoi(args[1])
@@ -337,6 +369,7 @@ func (h *Handler) llenCmd(args []string) {
 }
 
 func (h *Handler) lpushCmd(args []string) {
+	h.MasterNode.PropagateToReplicas("lpush", args)
 	length := h.store.LPush(args[0], args[1:]...)
 	if length > 0 {
 		response := fmt.Sprintf(":%d\r\n", length)
@@ -374,6 +407,7 @@ func (h *Handler) lrangeCmd(args []string) {
 }
 
 func (h *Handler) rpushCmd(args []string) {
+	h.MasterNode.PropagateToReplicas("rpush", args)
 	length := h.store.RPush(args[0], args[1:]...)
 	if length > 0 {
 		response := fmt.Sprintf(":%d\r\n", length)
@@ -392,6 +426,7 @@ func (h *Handler) echoCmd(args []string) {
 }
 
 func (h *Handler) setCmd(args []string) {
+	h.MasterNode.PropagateToReplicas("set", args)
 	var ttl time.Duration
 	if len(args) > 2 {
 		switch strings.ToLower(args[2]) {
@@ -479,6 +514,9 @@ func (h *Handler) HandleIncomingStream(conn net.Conn) {
 }
 
 func (h *Handler) SendResponse(response string) {
+	if info.Role != "master" {
+		return
+	}
 	if h.isResponseQueued {
 		h.cmdQueueResponses = append(h.cmdQueueResponses, response)
 	} else {
@@ -487,4 +525,29 @@ func (h *Handler) SendResponse(response string) {
 			fmt.Println(err)
 		}
 	}
+}
+
+func (m *MasterNode) PropagateToReplicas(cmd string, args []string) {
+	m.Mu.RLock()
+	defer m.Mu.RUnlock()
+
+	formated := formatPropagatedCommand(cmd, args)
+	for addr, conn := range m.Replicas {
+		_, err := conn.Write([]byte(formated))
+		if err != nil {
+			fmt.Printf("Failed to propaget to replicas %s: %v\n", addr, err)
+		}
+	}
+}
+
+func formatPropagatedCommand(cmd string, args []string) string {
+	var sb strings.Builder
+
+	sb.Write([]byte(fmt.Sprintf("*%d\r\n", len(args)+1)))
+	sb.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(cmd), cmd)))
+	for _, arg := range args {
+		sb.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(arg), arg)))
+	}
+
+	return sb.String()
 }

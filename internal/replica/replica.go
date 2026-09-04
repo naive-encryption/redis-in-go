@@ -3,10 +3,13 @@ package replica
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 
+	"redis-in-go/internal/commands"
 	"redis-in-go/internal/store"
 )
 
@@ -55,6 +58,51 @@ func ConnectToMaster(replicaOf string, myPort int, store *store.Store) {
 	offset := -1
 	psyncResponse := fmt.Sprintf("*3\r\n$5\r\nPSYNC\r\n$1\r\n%s\r\n$2\r\n%d\r\n", replicationID, offset)
 	fmt.Fprint(Conn, psyncResponse)
+
+	err = DiscardRDBPayload(reader)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	isMasterConn := true
+	h := commands.InitHandler(Conn, store, nil, isMasterConn)
+	h.HandleIncomingStream(Conn, reader)
+}
+
+func DiscardRDBPayload(reader *bufio.Reader) error {
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("Failed to read sync response: %w", err)
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "+FULLRESYNC") {
+			break
+		}
+	}
+
+	var rdbHeader string
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("Failed to read RDB header: %w", err)
+		}
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "$") {
+			rdbHeader = trimmed
+			break
+		}
+	}
+	rdbLen, err := strconv.Atoi(rdbHeader[1:])
+	if err != nil {
+		return fmt.Errorf("Invalid RDB length: %w", err)
+	}
+
+	_, err = io.CopyN(io.Discard, reader, int64(rdbLen))
+	if err != nil {
+		return fmt.Errorf("Failed to discard RDB payload: %w", err)
+	}
+	return nil
 }
 
 func ReadLine(r *bufio.Reader) (string, error) {

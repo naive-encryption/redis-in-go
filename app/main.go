@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"net"
@@ -28,7 +29,6 @@ func main() {
 		info.SetRole("master")
 	} else {
 		info.SetRole("slave")
-		go replica.ConnectToMaster(*replicaOf, *port, store)
 	}
 
 	info.MasterReplID = info.GenerateMasterReplID()
@@ -38,15 +38,21 @@ func main() {
 		panic(err)
 	}
 
+	if *replicaOf != "" {
+		go replica.ConnectToMaster(*replicaOf, *port, store)
+	}
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			fmt.Println(err)
 			continue
 		}
-		go func(c net.Conn) {
-			h := commands.InitHandler(conn, store, masterNode)
-			h.HandleIncomingStream(conn)
-		}(conn)
+		reader := bufio.NewReader(conn)
+		go func(c net.Conn, r *bufio.Reader) {
+			isMasterConn := false
+			h := commands.InitHandler(c, store, masterNode, isMasterConn)
+			h.HandleIncomingStream(c, r)
+		}(conn, reader)
 	}
 }

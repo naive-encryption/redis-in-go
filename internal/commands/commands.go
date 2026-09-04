@@ -2,6 +2,7 @@
 package commands
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"strconv"
@@ -35,10 +36,12 @@ type Handler struct {
 	isResponseQueued  bool
 	cmdQueueResponses []string
 	WatchedKeys       map[string]uint64
+
+	isMasterConn bool
 }
 
-func InitHandler(conn net.Conn, store *store.Store, masterNode *MasterNode) *Handler {
-	h := NewHandler(conn, store, masterNode)
+func InitHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMasterConn bool) *Handler {
+	h := NewHandler(conn, store, masterNode, isMasterConn)
 	return h
 }
 
@@ -49,8 +52,8 @@ func InitMasterNode() *MasterNode {
 	return masterNode
 }
 
-func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode) *Handler {
-	h := &Handler{conn: conn, store: store, MasterNode: masterNode}
+func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMasterConn bool) *Handler {
+	h := &Handler{conn: conn, store: store, MasterNode: masterNode, isMasterConn: isMasterConn}
 	h.WatchedKeys = make(map[string]uint64)
 	h.builtIns = map[string]func(args []string){
 		"echo":     h.echoCmd,
@@ -208,7 +211,9 @@ func (h *Handler) multiCmd(args []string) {
 }
 
 func (h *Handler) incrCmd(args []string) {
-	h.MasterNode.PropagateToReplicas("incr", args)
+	if h.MasterNode != nil {
+		h.MasterNode.PropagateToReplicas("incr", args)
+	}
 	if len(args) == 0 {
 		return // TODO: specify error
 	}
@@ -302,7 +307,9 @@ func (h *Handler) xrangeCmd(args []string) {
 }
 
 func (h *Handler) xaddCmd(args []string) {
-	h.MasterNode.PropagateToReplicas("xadd", args)
+	if h.MasterNode != nil {
+		h.MasterNode.PropagateToReplicas("xadd", args)
+	}
 	values := make(map[string]string, len(args[2:]))
 	for i := 2; i < len(args)-1; i += 2 {
 		values[args[i]] = args[i+1]
@@ -326,7 +333,9 @@ func (h *Handler) typeCmd(args []string) {
 }
 
 func (h *Handler) blpopCmd(args []string) {
-	h.MasterNode.PropagateToReplicas("blpop", args)
+	if h.MasterNode != nil {
+		h.MasterNode.PropagateToReplicas("blpop", args)
+	}
 	if len(args) < 2 {
 		return
 	}
@@ -348,7 +357,9 @@ func (h *Handler) blpopCmd(args []string) {
 }
 
 func (h *Handler) lpopCmd(args []string) {
-	h.MasterNode.PropagateToReplicas("lpop", args)
+	if h.MasterNode != nil {
+		h.MasterNode.PropagateToReplicas("lpop", args)
+	}
 	poppedElements := ""
 	if len(args) > 1 {
 		val, err := strconv.Atoi(args[1])
@@ -369,7 +380,9 @@ func (h *Handler) llenCmd(args []string) {
 }
 
 func (h *Handler) lpushCmd(args []string) {
-	h.MasterNode.PropagateToReplicas("lpush", args)
+	if h.MasterNode != nil {
+		h.MasterNode.PropagateToReplicas("lpush", args)
+	}
 	length := h.store.LPush(args[0], args[1:]...)
 	if length > 0 {
 		response := fmt.Sprintf(":%d\r\n", length)
@@ -407,7 +420,9 @@ func (h *Handler) lrangeCmd(args []string) {
 }
 
 func (h *Handler) rpushCmd(args []string) {
-	h.MasterNode.PropagateToReplicas("rpush", args)
+	if h.MasterNode != nil {
+		h.MasterNode.PropagateToReplicas("rpush", args)
+	}
 	length := h.store.RPush(args[0], args[1:]...)
 	if length > 0 {
 		response := fmt.Sprintf(":%d\r\n", length)
@@ -426,7 +441,10 @@ func (h *Handler) echoCmd(args []string) {
 }
 
 func (h *Handler) setCmd(args []string) {
-	h.MasterNode.PropagateToReplicas("set", args)
+	if h.MasterNode != nil {
+		h.MasterNode.PropagateToReplicas("set", args)
+	}
+
 	var ttl time.Duration
 	if len(args) > 2 {
 		switch strings.ToLower(args[2]) {
@@ -493,28 +511,41 @@ func (h *Handler) executeBuiltIn(cmd string, args []string) {
 	builtInFunc(args)
 }
 
-func (h *Handler) HandleIncomingStream(conn net.Conn) {
+func (h *Handler) HandleIncomingStream(conn net.Conn, reader *bufio.Reader) {
+	var buf []byte
 	for {
-		buf := make([]byte, 1024)
-
-		_, err := conn.Read(buf)
-		if err != nil {
-			fmt.Println("Error with reading connection", err.Error())
-			return
+		if len(buf) == 0 {
+			b := make([]byte, 1024)
+			n, err := reader.Read(b)
+			if err != nil {
+				fmt.Println("Error with reading connection:", err)
+				return
+			}
+			buf = b[:n]
 		}
 
-		cmds, _, err := resp.ParseCommand(buf)
+		cmds, pos, err := resp.ParseCommand(buf)
 		if err != nil {
-			fmt.Println(err)
+			if err.Error() == "not enough bytes for bulk string" || err.Error() == "invalid input, expected array" {
+				b := make([]byte, 1024)
+				n, readErr := reader.Read(b)
+				if readErr != nil {
+					fmt.Println("Error reading more data:", readErr)
+					return
+				}
+				buf = append(buf, b[:n]...)
+				continue
+			}
+			fmt.Println("Parse error:", err)
 			break
 		}
-
 		h.handleCommands(cmds)
+		buf = buf[pos:]
 	}
 }
 
 func (h *Handler) SendResponse(response string) {
-	if info.Role != "master" {
+	if h.isMasterConn {
 		return
 	}
 	if h.isResponseQueued {

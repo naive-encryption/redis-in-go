@@ -6,9 +6,9 @@ import (
 )
 
 var (
-	Role             = "master"
-	MasterReplID     = ""
-	MasterReplOffset = 0
+	Role                   = "master"
+	MasterReplID           = ""
+	MasterReplOffset int64 = 0
 )
 
 func SetRole(roleToSet string) {

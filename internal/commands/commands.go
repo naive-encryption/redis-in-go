@@ -38,6 +38,7 @@ type Handler struct {
 	WatchedKeys       map[string]uint64
 
 	isMasterConn bool
+	offset       int64
 }
 
 func InitHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMasterConn bool) *Handler {
@@ -104,8 +105,22 @@ func (h *Handler) psyncCmd(args []string) {
 }
 
 func (h *Handler) replconfCmd(args []string) {
-	response := "+OK\r\n"
-	h.SendResponse(response)
+	if len(args) < 1 {
+		return // HACK:
+	}
+	subCommand := strings.ToLower(args[0])
+	switch subCommand {
+	case "listening-port":
+		h.SendResponse("+OK\r\n")
+	case "capa":
+		h.SendResponse("+OK\r\n")
+	case "getack":
+		response := fmt.Sprintf("*3\r\n$8\r\nreplconf\r\n$3\r\nACK\r\n$%d\r\n%d\r\n", len(strconv.FormatInt(info.MasterReplOffset, 10)), info.MasterReplOffset)
+		_, err := fmt.Fprint(h.conn, response)
+		if err != nil {
+			fmt.Println(err)
+		}
+	}
 }
 
 func (h *Handler) infoCmd(args []string) {
@@ -540,7 +555,14 @@ func (h *Handler) HandleIncomingStream(conn net.Conn, reader *bufio.Reader) {
 			break
 		}
 		h.handleCommands(cmds)
+		TrackReplicaOffset(int64(pos))
 		buf = buf[pos:]
+	}
+}
+
+func TrackReplicaOffset(offsetToAdd int64) {
+	if info.Role == "slave" {
+		info.MasterReplOffset += offsetToAdd
 	}
 }
 

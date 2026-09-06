@@ -7,17 +7,10 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"sync"
 
 	"redis-in-go/internal/commands"
 	"redis-in-go/internal/store"
 )
-
-type Server struct {
-	MasterConn net.Conn
-	Store      *store.Store
-	Mu         sync.RWMutex
-}
 
 func ConnectToMaster(replicaOf string, myPort int, store *store.Store) {
 	parts := strings.Split(replicaOf, " ")

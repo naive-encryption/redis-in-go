@@ -41,7 +41,6 @@ func main() {
 	if *replicaOf != "" {
 		go replica.ConnectToMaster(*replicaOf, *port, store)
 	}
-
 	for {
 		conn, err := ln.Accept()
 		if err != nil {

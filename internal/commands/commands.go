@@ -20,9 +20,16 @@ type CommandQueueEntry struct {
 	args []string
 }
 
+type ReplicaInfo struct {
+	Conn   net.Conn
+	Offset int64
+}
+
 type MasterNode struct {
-	Replicas map[string]net.Conn
-	Mu       sync.RWMutex
+	Replicas     map[string]*ReplicaInfo
+	Mu           sync.RWMutex
+	GlobalOffset int64
+	AckChan      chan struct{}
 }
 
 type Handler struct {
@@ -38,7 +45,6 @@ type Handler struct {
 	WatchedKeys       map[string]uint64
 
 	isMasterConn bool
-	offset       int64
 }
 
 func InitHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMasterConn bool) *Handler {
@@ -48,7 +54,8 @@ func InitHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMa
 
 func InitMasterNode() *MasterNode {
 	masterNode := &MasterNode{
-		Replicas: make(map[string]net.Conn),
+		Replicas: make(map[string]*ReplicaInfo),
+		AckChan:  make(chan struct{}, 100),
 	}
 	return masterNode
 }
@@ -80,8 +87,117 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 		"info":     h.infoCmd,
 		"replconf": h.replconfCmd,
 		"psync":    h.psyncCmd,
+		"wait":     h.waitCmd,
 	}
 	return h
+}
+
+func (m *MasterNode) CountSyncedReplicaUnlocked(targetOffset int64) int {
+	count := 0
+	for _, r := range m.Replicas {
+		if r.Offset >= targetOffset {
+			count++
+		}
+	}
+	return count
+}
+
+func (m *MasterNode) BroadcastGetAck() {
+	m.Mu.RLock()
+
+	conns := make([]net.Conn, 0, len(m.Replicas))
+	for _, r := range m.Replicas {
+		conns = append(conns, r.Conn)
+	}
+
+	m.Mu.RUnlock()
+
+	getAckCmd := "*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
+	payload := []byte(getAckCmd)
+
+	for _, conn := range conns {
+		if conn != nil {
+			conn.Write(payload)
+		}
+	}
+}
+
+func (m *MasterNode) CountSyncedReplicas(targetOffset int64) int {
+	m.Mu.RLock()
+	defer m.Mu.RUnlock()
+	return m.CountSyncedReplicaUnlocked(targetOffset)
+}
+
+func (h *Handler) waitCmd(args []string) {
+	if len(args) < 2 {
+		fmt.Println("Not enough arguments for wait command")
+		return
+	}
+	numberOfReplicas, err := strconv.Atoi(args[0])
+	if err != nil {
+		fmt.Println("Failed to convert nubmer of replicas for wait command")
+		return
+	}
+	timeoutMs, err := strconv.Atoi(args[1])
+	if err != nil {
+		fmt.Println("Failed to convert timeout for wait command")
+		return
+	}
+
+	h.MasterNode.Mu.RLock()
+
+	connectedRepilcasCount := len(h.MasterNode.Replicas)
+	targetOffset := h.MasterNode.GlobalOffset
+
+	if targetOffset == 0 || connectedRepilcasCount == 0 || numberOfReplicas == 0 {
+		count := h.MasterNode.CountSyncedReplicaUnlocked(targetOffset)
+		response := fmt.Sprintf(":%d\r\n", count)
+		h.SendResponse(response)
+		h.MasterNode.Mu.RUnlock()
+		return
+	}
+	h.MasterNode.Mu.RUnlock()
+
+	h.MasterNode.BroadcastGetAck()
+	if h.MasterNode.CountSyncedReplicas(targetOffset) >= numberOfReplicas {
+		response := fmt.Sprintf(":%d\r\n", h.MasterNode.CountSyncedReplicas(targetOffset))
+		h.SendResponse(response)
+		return
+	}
+
+	var timeoutChan <-chan time.Time
+	if timeoutMs > 0 {
+		timeoutChan = time.After(time.Duration(timeoutMs) * time.Millisecond)
+	}
+
+	for {
+		if h.MasterNode.CountSyncedReplicas(targetOffset) >= numberOfReplicas {
+			response := fmt.Sprintf(":%d\r\n", numberOfReplicas)
+			h.SendResponse(response)
+			return
+		}
+
+		select {
+		case <-timeoutChan:
+			response := fmt.Sprintf(":%d\r\n", h.MasterNode.CountSyncedReplicas(targetOffset))
+			h.SendResponse(response)
+			return
+		case <-h.MasterNode.AckChan:
+		}
+	}
+}
+
+func (m *MasterNode) UpdateReplicaOffset(id string, offset int64) {
+	m.Mu.Lock()
+	if replica, exists := m.Replicas[id]; exists {
+		replica.Offset = offset
+	}
+	m.Mu.Unlock()
+
+	select {
+	case m.AckChan <- struct{}{}:
+	default:
+	}
 }
 
 func (h *Handler) psyncCmd(args []string) {
@@ -89,8 +205,13 @@ func (h *Handler) psyncCmd(args []string) {
 		return // not enough arguments
 	}
 
+	addr := h.conn.RemoteAddr().String()
+
 	h.MasterNode.Mu.Lock()
-	h.MasterNode.Replicas[h.conn.RemoteAddr().String()] = h.conn
+	if _, exists := h.MasterNode.Replicas[addr]; !exists {
+		h.MasterNode.Replicas[addr] = &ReplicaInfo{}
+	}
+	h.MasterNode.Replicas[h.conn.RemoteAddr().String()].Conn = h.conn
 	h.MasterNode.Mu.Unlock()
 
 	response := fmt.Sprintf("+FULLRESYNC %s %d\r\n", info.MasterReplID, info.MasterReplOffset)
@@ -120,6 +241,19 @@ func (h *Handler) replconfCmd(args []string) {
 		if err != nil {
 			fmt.Println(err)
 		}
+	case "ack":
+
+		if len(args) < 2 {
+			return
+		}
+		ackOffset, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil {
+			fmt.Println("Failed to parse int on ack:", err)
+			return
+		}
+
+		addr := h.conn.RemoteAddr().String()
+		h.MasterNode.UpdateReplicaOffset(addr, ackOffset)
 	}
 }
 
@@ -555,12 +689,18 @@ func (h *Handler) HandleIncomingStream(conn net.Conn, reader *bufio.Reader) {
 			break
 		}
 		h.handleCommands(cmds)
-		TrackReplicaOffset(int64(pos))
+		h.TrackOffset(int64(pos))
 		buf = buf[pos:]
 	}
 }
 
-func TrackReplicaOffset(offsetToAdd int64) {
+func (m *MasterNode) AddGlobalOffset(offsetToAdd int64) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	m.GlobalOffset += offsetToAdd
+}
+
+func (h *Handler) TrackOffset(offsetToAdd int64) {
 	if info.Role == "slave" {
 		info.MasterReplOffset += offsetToAdd
 	}
@@ -585,12 +725,13 @@ func (m *MasterNode) PropagateToReplicas(cmd string, args []string) {
 	defer m.Mu.RUnlock()
 
 	formated := formatPropagatedCommand(cmd, args)
-	for addr, conn := range m.Replicas {
-		_, err := conn.Write([]byte(formated))
+	for addr, info := range m.Replicas {
+		_, err := info.Conn.Write([]byte(formated))
 		if err != nil {
 			fmt.Printf("Failed to propaget to replicas %s: %v\n", addr, err)
 		}
 	}
+	m.GlobalOffset += int64(len(formated))
 }
 
 func formatPropagatedCommand(cmd string, args []string) string {

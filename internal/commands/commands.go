@@ -88,8 +88,26 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 		"replconf": h.replconfCmd,
 		"psync":    h.psyncCmd,
 		"wait":     h.waitCmd,
+		"config":   h.configCmds,
 	}
 	return h
+}
+
+func (h *Handler) configCmds(args []string) {
+	if len(args) < 2 {
+		return
+	}
+
+	switch strings.ToLower(args[0]) {
+	case "get":
+		if args[1] == "dir" {
+			response := fmt.Sprintf("*%d\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", 2, len(args[1]), args[1], len(info.RDBDir), info.RDBDir)
+			h.SendResponse(response)
+		} else if args[1] == "dbfilename" {
+			response := fmt.Sprintf("*%d\r\n$%d\r\n$%d\r\n%s\r\n", 2, len(args[1]), args[1], len(info.RDBFileName), info.RDBFileName)
+			h.SendResponse(response)
+		}
+	}
 }
 
 func (m *MasterNode) CountSyncedReplicaUnlocked(targetOffset int64) int {

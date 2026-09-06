@@ -17,7 +17,12 @@ func main() {
 	port := flag.Int("port", 6379, "Port number")
 	replicaOf := flag.String("replicaof", "", "Replica")
 
+	rdbDir := flag.String("dir", "", "RDB directory")
+	rdbFileName := flag.String("dbfilename", "", "RDB file name")
+
 	flag.Parse()
+
+	initRDBInfo(*rdbDir, *rdbFileName)
 
 	portProvidedParsed := ":" + strconv.Itoa(*port)
 
@@ -53,5 +58,14 @@ func main() {
 			h := commands.InitHandler(c, store, masterNode, isMasterConn)
 			h.HandleIncomingStream(c, r)
 		}(conn, reader)
+	}
+}
+
+func initRDBInfo(rdbDir, rdbFileName string) {
+	if rdbDir != "" {
+		info.RDBDir = rdbDir
+	}
+	if rdbFileName != "" {
+		info.RDBFileName = rdbFileName
 	}
 }

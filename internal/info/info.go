@@ -9,6 +9,9 @@ var (
 	Role                   = "master"
 	MasterReplID           = ""
 	MasterReplOffset int64 = 0
+
+	RDBDir      = ""
+	RDBFileName = ""
 )
 
 func SetRole(roleToSet string) {

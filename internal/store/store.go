@@ -67,6 +67,27 @@ func (s *Store) Set(key, value string, ttl time.Duration) {
 	s.data[key] = e
 }
 
+func (s *Store) SetWithAbsoluteExpiry(key, value string, expiresAtMs int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var expiresAt time.Time
+
+	if expiresAtMs > 0 {
+		expiresAt = time.UnixMilli(expiresAtMs)
+	}
+
+	e, exists := s.data[key]
+	if !exists {
+		s.data[key] = entry{value: value, version: 1, expiresAt: expiresAt}
+		return
+	}
+	e.value = value
+	e.version++
+	e.expiresAt = expiresAt
+	s.data[key] = e
+}
+
 func (s *Store) Get(key string) (value string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

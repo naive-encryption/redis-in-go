@@ -9,6 +9,7 @@ import (
 
 	"redis-in-go/internal/commands"
 	"redis-in-go/internal/info"
+	rdbparser "redis-in-go/internal/rdbParser"
 	"redis-in-go/internal/replica"
 	"redis-in-go/internal/store"
 )
@@ -27,6 +28,7 @@ func main() {
 	portProvidedParsed := ":" + strconv.Itoa(*port)
 
 	store := store.NewStore()
+	loadRDBIntoStore(info.RDBDir+"/"+info.RDBFileName, store)
 
 	masterNode := commands.InitMasterNode()
 
@@ -68,4 +70,17 @@ func initRDBInfo(rdbDir, rdbFileName string) {
 	if rdbFileName != "" {
 		info.RDBFileName = rdbFileName
 	}
+}
+
+func loadRDBIntoStore(path string, s *store.Store) error {
+	entries, err := rdbparser.ReadRDBFile(path)
+	if err != nil {
+		return err
+	}
+	fmt.Println(entries)
+
+	for _, e := range entries {
+		s.SetWithAbsoluteExpiry(e.Key, e.Value, e.ExpireAt)
+	}
+	return nil
 }

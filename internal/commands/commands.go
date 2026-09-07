@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"redis-in-go/internal/info"
+	rdbparser "redis-in-go/internal/rdbParser"
 	"redis-in-go/internal/resp"
 	"redis-in-go/internal/store"
 )
@@ -89,8 +90,32 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 		"psync":    h.psyncCmd,
 		"wait":     h.waitCmd,
 		"config":   h.configCmds,
+		"keys":     h.keysCmd,
+		"save":     h.saveCmd,
 	}
 	return h
+}
+
+func (h *Handler) saveCmd(args []string) {
+	// TODO: implement SAVE command
+}
+
+func (h *Handler) keysCmd(args []string) {
+	path := info.RDBDir + "/" + info.RDBFileName
+
+	parsedData, err := rdbparser.ReadRDBFile(path)
+	if err != nil {
+		fmt.Println("Failed to read rdb", err)
+	}
+
+	arrayHeader := fmt.Sprintf("*%d\r\n", len(parsedData))
+	var sb strings.Builder
+	for k := range parsedData {
+		arrayElement := fmt.Sprintf("$%d\r\n%s\r\n", len(k), k)
+		sb.Write([]byte(arrayElement))
+	}
+	response := arrayHeader + sb.String()
+	h.SendResponse(response)
 }
 
 func (h *Handler) configCmds(args []string) {

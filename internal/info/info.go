@@ -10,7 +10,7 @@ var (
 	MasterReplID           = ""
 	MasterReplOffset int64 = 0
 
-	RDBDir      = ""
+	WorkDir     = "/app"
 	RDBFileName = ""
 )
 

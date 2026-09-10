@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 
+	"redis-in-go/internal/aof"
 	"redis-in-go/internal/commands"
 	"redis-in-go/internal/info"
 	rdbparser "redis-in-go/internal/rdbParser"
@@ -18,17 +19,23 @@ func main() {
 	port := flag.Int("port", 6379, "Port number")
 	replicaOf := flag.String("replicaof", "", "Replica")
 
-	rdbDir := flag.String("dir", "", "RDB directory")
+	rdbDir := flag.String("dir", "", "Working directory")
 	rdbFileName := flag.String("dbfilename", "", "RDB file name")
+
+	aofAppendOnly := flag.String("appendonly", "no", "")
+	aofAppendDirName := flag.String("appenddirname", "appendonlydir", "")
+	aofAppendFileName := flag.String("appendfilename", "appendonly.aof", "")
+	aofAppendFSync := flag.String("appendfsync", "everysec", "")
 
 	flag.Parse()
 
 	initRDBInfo(*rdbDir, *rdbFileName)
+	aof.Init(*aofAppendOnly, *aofAppendDirName, *aofAppendFileName, *aofAppendFSync)
 
 	portProvidedParsed := ":" + strconv.Itoa(*port)
 
 	store := store.NewStore()
-	loadRDBIntoStore(info.RDBDir+"/"+info.RDBFileName, store)
+	loadRDBIntoStore(info.WorkDir+"/"+info.RDBFileName, store)
 
 	masterNode := commands.InitMasterNode()
 
@@ -65,7 +72,7 @@ func main() {
 
 func initRDBInfo(rdbDir, rdbFileName string) {
 	if rdbDir != "" {
-		info.RDBDir = rdbDir
+		info.WorkDir = rdbDir
 	}
 	if rdbFileName != "" {
 		info.RDBFileName = rdbFileName
@@ -77,7 +84,6 @@ func loadRDBIntoStore(path string, s *store.Store) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println(entries)
 
 	for _, e := range entries {
 		s.SetWithAbsoluteExpiry(e.Key, e.Value, e.ExpireAt)

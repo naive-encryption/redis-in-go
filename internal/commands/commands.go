@@ -5,11 +5,14 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"redis-in-go/internal/aof"
 	"redis-in-go/internal/info"
 	rdbparser "redis-in-go/internal/rdbParser"
 	"redis-in-go/internal/resp"
@@ -46,6 +49,8 @@ type Handler struct {
 	WatchedKeys       map[string]uint64
 
 	isMasterConn bool
+
+	aofBuffer []string
 }
 
 func InitHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMasterConn bool) *Handler {
@@ -64,6 +69,7 @@ func InitMasterNode() *MasterNode {
 func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMasterConn bool) *Handler {
 	h := &Handler{conn: conn, store: store, MasterNode: masterNode, isMasterConn: isMasterConn}
 	h.WatchedKeys = make(map[string]uint64)
+	h.aofBuffer = make([]string, 0, 96)
 	h.builtIns = map[string]func(args []string){
 		"echo":     h.echoCmd,
 		"ping":     h.pingCmd,
@@ -101,7 +107,7 @@ func (h *Handler) saveCmd(args []string) {
 }
 
 func (h *Handler) keysCmd(args []string) {
-	path := info.RDBDir + "/" + info.RDBFileName
+	path := info.WorkDir + "/" + info.RDBFileName
 
 	parsedData, err := rdbparser.ReadRDBFile(path)
 	if err != nil {
@@ -125,11 +131,20 @@ func (h *Handler) configCmds(args []string) {
 
 	switch strings.ToLower(args[0]) {
 	case "get":
-		if args[1] == "dir" {
-			response := fmt.Sprintf("*%d\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", 2, len(args[1]), args[1], len(info.RDBDir), info.RDBDir)
+		switch strings.ToLower(args[1]) {
+		case "dir":
+			response := fmt.Sprintf("*%d\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", 2, len(args[1]), args[1], len(info.WorkDir), info.WorkDir)
 			h.SendResponse(response)
-		} else if args[1] == "dbfilename" {
+		case "dbfilename":
 			response := fmt.Sprintf("*%d\r\n$%d\r\n$%d\r\n%s\r\n", 2, len(args[1]), args[1], len(info.RDBFileName), info.RDBFileName)
+			h.SendResponse(response)
+		case "appendonly", "appenddirname", "appendfilename", "appendfsync":
+			value, err := aof.ConfigGet(strings.ToLower(args[1]))
+			if err != nil {
+				fmt.Println("Failed to retrieve aof info:", err)
+			}
+			response := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(args[1]), args[1], len(value), value)
+			fmt.Println(response)
 			h.SendResponse(response)
 		}
 	}
@@ -403,9 +418,7 @@ func (h *Handler) multiCmd(args []string) {
 }
 
 func (h *Handler) incrCmd(args []string) {
-	if h.MasterNode != nil {
-		h.MasterNode.PropagateToReplicas("incr", args)
-	}
+	h.HandleModifyingCmd("incr", args)
 	if len(args) == 0 {
 		return // TODO: specify error
 	}
@@ -499,9 +512,7 @@ func (h *Handler) xrangeCmd(args []string) {
 }
 
 func (h *Handler) xaddCmd(args []string) {
-	if h.MasterNode != nil {
-		h.MasterNode.PropagateToReplicas("xadd", args)
-	}
+	h.HandleModifyingCmd("xadd", args)
 	values := make(map[string]string, len(args[2:]))
 	for i := 2; i < len(args)-1; i += 2 {
 		values[args[i]] = args[i+1]
@@ -525,9 +536,7 @@ func (h *Handler) typeCmd(args []string) {
 }
 
 func (h *Handler) blpopCmd(args []string) {
-	if h.MasterNode != nil {
-		h.MasterNode.PropagateToReplicas("blpop", args)
-	}
+	h.HandleModifyingCmd("blpop", args)
 	if len(args) < 2 {
 		return
 	}
@@ -549,9 +558,7 @@ func (h *Handler) blpopCmd(args []string) {
 }
 
 func (h *Handler) lpopCmd(args []string) {
-	if h.MasterNode != nil {
-		h.MasterNode.PropagateToReplicas("lpop", args)
-	}
+	h.HandleModifyingCmd("lpop", args)
 	poppedElements := ""
 	if len(args) > 1 {
 		val, err := strconv.Atoi(args[1])
@@ -572,9 +579,7 @@ func (h *Handler) llenCmd(args []string) {
 }
 
 func (h *Handler) lpushCmd(args []string) {
-	if h.MasterNode != nil {
-		h.MasterNode.PropagateToReplicas("lpush", args)
-	}
+	h.HandleModifyingCmd("lpush", args)
 	length := h.store.LPush(args[0], args[1:]...)
 	if length > 0 {
 		response := fmt.Sprintf(":%d\r\n", length)
@@ -612,9 +617,7 @@ func (h *Handler) lrangeCmd(args []string) {
 }
 
 func (h *Handler) rpushCmd(args []string) {
-	if h.MasterNode != nil {
-		h.MasterNode.PropagateToReplicas("rpush", args)
-	}
+	h.HandleModifyingCmd("rpush", args)
 	length := h.store.RPush(args[0], args[1:]...)
 	if length > 0 {
 		response := fmt.Sprintf(":%d\r\n", length)
@@ -633,9 +636,7 @@ func (h *Handler) echoCmd(args []string) {
 }
 
 func (h *Handler) setCmd(args []string) {
-	if h.MasterNode != nil {
-		h.MasterNode.PropagateToReplicas("set", args)
-	}
+	h.HandleModifyingCmd("set", args) // TODO: check for len before
 
 	var ttl time.Duration
 	if len(args) > 2 {
@@ -787,4 +788,47 @@ func formatPropagatedCommand(cmd string, args []string) string {
 	}
 
 	return sb.String()
+}
+
+func (h *Handler) FlushWriteCmdsToAOF() {
+	fileNameToFlushTo := aof.GetFileNameToFlushAOFTo()
+	aofDir, exists := aof.AOFInfo["appenddirname"]
+	if !exists {
+		fmt.Println("No directory for aof set")
+		return
+	}
+	fileNameToFlushToFullPath := filepath.Join(info.WorkDir, aofDir, fileNameToFlushTo)
+
+	file, err := os.OpenFile(fileNameToFlushToFullPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	if err != nil {
+		fmt.Println("Failed to open active incr file:", err)
+		return
+	}
+	defer file.Close()
+
+	if len(h.aofBuffer) > 0 {
+		for _, cmd := range h.aofBuffer {
+			file.WriteString(cmd)
+		}
+		h.aofBuffer = h.aofBuffer[:0]
+
+	}
+}
+
+func (h *Handler) HandleModifyingCmd(cmd string, args []string) {
+	if h.MasterNode != nil {
+		h.MasterNode.PropagateToReplicas(cmd, args)
+	}
+
+	arrayHeader := fmt.Sprintf("*%d\r\n", len(args)+1)
+	var sb strings.Builder
+	sb.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(cmd), strings.ToUpper(cmd)))) // HACK: ToUpper doesn't neccessarily reflects the actual cmd passed
+	for _, arg := range args {
+		sb.Write([]byte(fmt.Sprintf("$%d\r\n%s\r\n", len(arg), arg)))
+	}
+	aofLine := arrayHeader + sb.String()
+
+	h.aofBuffer = append(h.aofBuffer, aofLine)
+
+	h.FlushWriteCmdsToAOF()
 }

@@ -4,9 +4,8 @@ package commands
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -751,7 +750,7 @@ func (h *Handler) TrackOffset(offsetToAdd int64) {
 }
 
 func (h *Handler) SendResponse(response string) {
-	if h.isMasterConn {
+	if h.isMasterConn || h.store.IsRebuildingState {
 		return
 	}
 	if h.isResponseQueued {
@@ -791,17 +790,9 @@ func formatPropagatedCommand(cmd string, args []string) string {
 }
 
 func (h *Handler) FlushWriteCmdsToAOF() {
-	fileNameToFlushTo := aof.GetFileNameToFlushAOFTo()
-	aofDir, exists := aof.AOFInfo["appenddirname"]
-	if !exists {
-		fmt.Println("No directory for aof set")
-		return
-	}
-	fileNameToFlushToFullPath := filepath.Join(info.WorkDir, aofDir, fileNameToFlushTo)
-
-	file, err := os.OpenFile(fileNameToFlushToFullPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	file, err := aof.GetActiveIncrementalFile()
 	if err != nil {
-		fmt.Println("Failed to open active incr file:", err)
+		fmt.Println("Failed to open aof:", err)
 		return
 	}
 	defer file.Close()
@@ -831,4 +822,49 @@ func (h *Handler) HandleModifyingCmd(cmd string, args []string) {
 	h.aofBuffer = append(h.aofBuffer, aofLine)
 
 	h.FlushWriteCmdsToAOF()
+}
+
+var rebuildMutex sync.Mutex
+
+func (h *Handler) RebuildState() error {
+	if aof.AOFInfo["appendonly"] != "yes" {
+		return nil
+	}
+	rebuildMutex.Lock()
+	defer rebuildMutex.Unlock()
+	if h.store.IsDoneRebuilding {
+		return nil
+	}
+
+	h.store.IsRebuildingState = true
+	defer func() {
+		h.store.IsRebuildingState = false
+		h.store.IsDoneRebuilding = true
+	}()
+
+	file, err := aof.GetActiveIncrementalFile()
+	if err != nil {
+		h.store.IsRebuildingState = false
+		return fmt.Errorf("Failed to open aof: %s", err)
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+
+	if len(data) == 0 {
+		return nil
+	}
+
+	buf := data
+
+	for len(buf) > 0 {
+		args, pos, err := resp.ParseCommand(buf)
+		if err != nil {
+			return fmt.Errorf("Failed to parse during rebuild: %w", err)
+		}
+		h.handleCommands(args)
+		buf = buf[pos:]
+	}
+
+	return nil
 }

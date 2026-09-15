@@ -35,14 +35,18 @@ type Store struct {
 	streams  map[string]Stream
 
 	blockingClients map[string][]chan string // WARN: might be a concurrency issue
+
+	IsRebuildingState bool
+	IsDoneRebuilding  bool
 }
 
 func NewStore() *Store {
 	return &Store{
-		data:            make(map[string]entry),
-		elements:        make(map[string][]string),
-		blockingClients: make(map[string][]chan string),
-		streams:         make(map[string]Stream),
+		data:             make(map[string]entry),
+		elements:         make(map[string][]string),
+		blockingClients:  make(map[string][]chan string),
+		streams:          make(map[string]Stream),
+		IsDoneRebuilding: false,
 	}
 }
 

@@ -52,6 +52,10 @@ func main() {
 		panic(err)
 	}
 
+	if err != nil {
+		fmt.Println("Failed to rebuild aof state:", err)
+	}
+
 	if *replicaOf != "" {
 		go replica.ConnectToMaster(*replicaOf, *port, store)
 	}
@@ -65,6 +69,10 @@ func main() {
 		go func(c net.Conn, r *bufio.Reader) {
 			isMasterConn := false
 			h := commands.InitHandler(c, store, masterNode, isMasterConn)
+			err := h.RebuildState()
+			if err != nil {
+				fmt.Println("Failed to rebuild state:", err)
+			}
 			h.HandleIncomingStream(c, r)
 		}(conn, reader)
 	}

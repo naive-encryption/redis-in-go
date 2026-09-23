@@ -91,35 +91,36 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 	h.subs = make(map[string]struct{})
 	h.sendChan = make(chan []byte, 256)
 	h.builtIns = map[string]func(args []string){
-		"echo":      h.echoCmd,
-		"ping":      h.pingCmd,
-		"set":       h.setCmd, // propagated
-		"get":       h.getCmd,
-		"rpush":     h.rpushCmd, // propagated
-		"lrange":    h.lrangeCmd,
-		"lpush":     h.lpushCmd, // propagated
-		"llen":      h.llenCmd,
-		"lpop":      h.lpopCmd,  // propagated
-		"blpop":     h.blpopCmd, // propagated
-		"type":      h.typeCmd,
-		"xadd":      h.xaddCmd, // propagated
-		"xrange":    h.xrangeCmd,
-		"xread":     h.xreadCmd,
-		"incr":      h.incrCmd, // propagated
-		"multi":     h.multiCmd,
-		"exec":      h.execCmd,
-		"discard":   h.discardCmd,
-		"watch":     h.watchCmd,
-		"unwatch":   h.unwatchCmd,
-		"info":      h.infoCmd,
-		"replconf":  h.replconfCmd,
-		"psync":     h.psyncCmd,
-		"wait":      h.waitCmd,
-		"config":    h.configCmds,
-		"keys":      h.keysCmd,
-		"save":      h.saveCmd,
-		"subscribe": h.subscribeCmd,
-		"publish":   h.publishCmd,
+		"echo":        h.echoCmd,
+		"ping":        h.pingCmd,
+		"set":         h.setCmd, // propagated
+		"get":         h.getCmd,
+		"rpush":       h.rpushCmd, // propagated
+		"lrange":      h.lrangeCmd,
+		"lpush":       h.lpushCmd, // propagated
+		"llen":        h.llenCmd,
+		"lpop":        h.lpopCmd,  // propagated
+		"blpop":       h.blpopCmd, // propagated
+		"type":        h.typeCmd,
+		"xadd":        h.xaddCmd, // propagated
+		"xrange":      h.xrangeCmd,
+		"xread":       h.xreadCmd,
+		"incr":        h.incrCmd, // propagated
+		"multi":       h.multiCmd,
+		"exec":        h.execCmd,
+		"discard":     h.discardCmd,
+		"watch":       h.watchCmd,
+		"unwatch":     h.unwatchCmd,
+		"info":        h.infoCmd,
+		"replconf":    h.replconfCmd,
+		"psync":       h.psyncCmd,
+		"wait":        h.waitCmd,
+		"config":      h.configCmds,
+		"keys":        h.keysCmd,
+		"save":        h.saveCmd,
+		"subscribe":   h.subscribeCmd,
+		"publish":     h.publishCmd,
+		"unsubscribe": h.unsubscribeCmd,
 	}
 	return h
 }
@@ -168,6 +169,38 @@ func (p *PubSubServer) Publish(channel string, message []byte) int {
 		}
 	}
 	return count
+}
+
+func (p *PubSubServer) Unsubscribe(h *Handler, channel string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if subscribers, exists := p.channels[channel]; exists {
+		delete(subscribers, h)
+		if len(subscribers) == 0 {
+			delete(p.channels, channel)
+		}
+	}
+
+	if h.subs != nil {
+		delete(h.subs, channel)
+	}
+	if h.subs == nil {
+		return 0
+	}
+	return len(h.subs)
+}
+
+func (h *Handler) unsubscribeCmd(args []string) {
+	if len(args) < 1 {
+		return
+	}
+
+	subCount := pubSubServer.Unsubscribe(h, args[0])
+
+	response := fmt.Sprintf("*3\r\n$11\r\n%s\r\n$%d\r\n%s\r\n:%d\r\n", "unsubscribe", len(args[0]), args[0], subCount)
+
+	h.SendResponse(response)
 }
 
 func (h *Handler) SubscribeToChannel(channel string) {

@@ -50,6 +50,25 @@ type Handler struct {
 	isMasterConn bool
 
 	aofBuffer []string
+
+	subs             map[string]struct{}
+	sendChan         chan []byte
+	IsSubscriberMode bool
+}
+
+type PubSubServer struct {
+	mu       sync.RWMutex
+	channels map[string]map[*Handler]struct{}
+}
+
+func NewPubSubServer() *PubSubServer {
+	return &PubSubServer{channels: make(map[string]map[*Handler]struct{})}
+}
+
+var pubSubServer PubSubServer
+
+func init() {
+	pubSubServer = *NewPubSubServer()
 }
 
 func InitHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMasterConn bool) *Handler {
@@ -69,36 +88,119 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 	h := &Handler{conn: conn, store: store, MasterNode: masterNode, isMasterConn: isMasterConn}
 	h.WatchedKeys = make(map[string]uint64)
 	h.aofBuffer = make([]string, 0, 96)
+	h.subs = make(map[string]struct{})
+	h.sendChan = make(chan []byte, 256)
 	h.builtIns = map[string]func(args []string){
-		"echo":     h.echoCmd,
-		"ping":     h.pingCmd,
-		"set":      h.setCmd, // propagated
-		"get":      h.getCmd,
-		"rpush":    h.rpushCmd, // propagated
-		"lrange":   h.lrangeCmd,
-		"lpush":    h.lpushCmd, // propagated
-		"llen":     h.llenCmd,
-		"lpop":     h.lpopCmd,  // propagated
-		"blpop":    h.blpopCmd, // propagated
-		"type":     h.typeCmd,
-		"xadd":     h.xaddCmd, // propagated
-		"xrange":   h.xrangeCmd,
-		"xread":    h.xreadCmd,
-		"incr":     h.incrCmd, // propagated
-		"multi":    h.multiCmd,
-		"exec":     h.execCmd,
-		"discard":  h.discardCmd,
-		"watch":    h.watchCmd,
-		"unwatch":  h.unwatchCmd,
-		"info":     h.infoCmd,
-		"replconf": h.replconfCmd,
-		"psync":    h.psyncCmd,
-		"wait":     h.waitCmd,
-		"config":   h.configCmds,
-		"keys":     h.keysCmd,
-		"save":     h.saveCmd,
+		"echo":      h.echoCmd,
+		"ping":      h.pingCmd,
+		"set":       h.setCmd, // propagated
+		"get":       h.getCmd,
+		"rpush":     h.rpushCmd, // propagated
+		"lrange":    h.lrangeCmd,
+		"lpush":     h.lpushCmd, // propagated
+		"llen":      h.llenCmd,
+		"lpop":      h.lpopCmd,  // propagated
+		"blpop":     h.blpopCmd, // propagated
+		"type":      h.typeCmd,
+		"xadd":      h.xaddCmd, // propagated
+		"xrange":    h.xrangeCmd,
+		"xread":     h.xreadCmd,
+		"incr":      h.incrCmd, // propagated
+		"multi":     h.multiCmd,
+		"exec":      h.execCmd,
+		"discard":   h.discardCmd,
+		"watch":     h.watchCmd,
+		"unwatch":   h.unwatchCmd,
+		"info":      h.infoCmd,
+		"replconf":  h.replconfCmd,
+		"psync":     h.psyncCmd,
+		"wait":      h.waitCmd,
+		"config":    h.configCmds,
+		"keys":      h.keysCmd,
+		"save":      h.saveCmd,
+		"subscribe": h.subscribeCmd,
+		"publish":   h.publishCmd,
 	}
 	return h
+}
+
+func (p *PubSubServer) Subscribe(h *Handler, channel string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.channels == nil {
+		p.channels = make(map[string]map[*Handler]struct{})
+	}
+
+	_, exists := p.channels[channel]
+	if !exists {
+		p.channels[channel] = make(map[*Handler]struct{})
+	}
+	p.channels[channel][h] = struct{}{}
+
+	h.subs[channel] = struct{}{}
+}
+
+func (p *PubSubServer) Publish(channel string, message []byte) int {
+	p.mu.RLock()
+	subscribers, exists := p.channels[channel]
+	if !exists {
+		p.mu.RUnlock()
+		return 0
+	}
+
+	clients := make([]*Handler, 0, len(subscribers))
+	for client := range subscribers {
+		clients = append(clients, client)
+	}
+	p.mu.RUnlock()
+
+	msgStr := string(message)
+	respResponseStr := fmt.Sprintf("*3\r\n$7\r\nmessage\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(channel), channel, len(msgStr), msgStr)
+
+	count := 0
+
+	for _, client := range clients {
+		select {
+		case client.sendChan <- []byte(respResponseStr):
+			count++
+		default:
+		}
+	}
+	return count
+}
+
+func (h *Handler) SubscribeToChannel(channel string) {
+	pubSubServer.Subscribe(h, channel)
+}
+
+func (h *Handler) IsSubscribeCmd(cmd string) bool {
+	switch cmd {
+	case "subscribe", "unsubscribe", "psubscribe", "punsubscribe", "ping", "quit":
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *Handler) publishCmd(args []string) {
+	if len(args) < 2 {
+		return
+	}
+	clientsCount := pubSubServer.Publish(args[0], []byte(args[1]))
+	response := fmt.Sprintf(":%d\r\n", clientsCount)
+	h.SendResponse(response)
+}
+
+func (h *Handler) subscribeCmd(args []string) {
+	if len(args) == 0 {
+		return
+	}
+	h.SubscribeToChannel(args[0])
+	h.IsSubscriberMode = true
+
+	response := fmt.Sprintf("*3\r\n$9\r\n%s\r\n$%d\r\n%s\r\n:%d\r\n", "subscribe", len(args[0]), args[0], len(h.subs))
+	h.SendResponse(response)
 }
 
 func (h *Handler) saveCmd(args []string) {
@@ -625,6 +727,12 @@ func (h *Handler) rpushCmd(args []string) {
 }
 
 func (h *Handler) pingCmd(args []string) {
+	if h.IsSubscriberMode {
+		response := "*2\r\n$4\r\npong\r\n$0\r\n\r\n"
+		h.SendResponse(response)
+		return
+	}
+
 	response := "+PONG\r\n"
 	h.SendResponse(response)
 }
@@ -686,6 +794,11 @@ func (h *Handler) executeBuiltIn(cmd string, args []string) {
 	builtInFunc, ok := h.builtIns[cmd]
 	if !ok {
 		fmt.Println("not a built-in")
+	}
+	if h.IsSubscriberMode && !h.IsSubscribeCmd(cmd) {
+		response := fmt.Sprintf("-ERR can't execute '%s' when one or more subscriptions exist\r\n", cmd)
+		h.SendResponse(response)
+		return
 	}
 	if h.isMultiActive && cmd == "watch" {
 		response := "-ERR WATCH inside MULTI is not allowed\r\n"
@@ -867,4 +980,13 @@ func (h *Handler) RebuildState() error {
 	}
 
 	return nil
+}
+
+func (h *Handler) StartWriterForPubSub() {
+	for msg := range h.sendChan {
+		_, err := h.conn.Write(msg)
+		if err != nil {
+			break // TODO: handle connection breaks
+		}
+	}
 }

@@ -73,6 +73,7 @@ func main() {
 			if err != nil {
 				fmt.Println("Failed to rebuild state:", err)
 			}
+			go h.StartWriterForPubSub()
 			h.HandleIncomingStream(c, r)
 		}(conn, reader)
 	}

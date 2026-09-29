@@ -121,8 +121,37 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 		"subscribe":   h.subscribeCmd,
 		"publish":     h.publishCmd,
 		"unsubscribe": h.unsubscribeCmd,
+		"zadd":        h.zaddCmd, // not propagated
+		"zrank":       h.zrankCmd,
 	}
 	return h
+}
+
+func (h *Handler) zrankCmd(args []string) {
+	setName := args[0]
+	member := args[1]
+	rank, err := h.store.ZRank(setName, member)
+	var response string
+	if err != nil {
+		response = "$-1\r\n"
+	} else {
+		response = fmt.Sprintf(":%d\r\n", rank)
+	}
+	h.SendResponse(response)
+}
+
+func (h *Handler) zaddCmd(args []string) {
+	score, err := strconv.ParseFloat(args[1], 64)
+	if err != nil {
+		fmt.Println("Failed to parse score as float")
+		return
+	}
+	member := args[2]
+	set := args[0]
+	elementsAdded := h.store.ZAdd(set, member, score)
+
+	response := fmt.Sprintf(":%d\r\n", elementsAdded)
+	h.SendResponse(response)
 }
 
 func (p *PubSubServer) Subscribe(h *Handler, channel string) {

@@ -29,10 +29,11 @@ type entry struct {
 }
 
 type Store struct {
-	mu       sync.Mutex
-	data     map[string]entry
-	elements map[string][]string
-	streams  map[string]Stream
+	mu         sync.Mutex
+	data       map[string]entry
+	elements   map[string][]string
+	streams    map[string]Stream
+	sortedSets map[string]SkipList
 
 	blockingClients map[string][]chan string // WARN: might be a concurrency issue
 
@@ -46,8 +47,43 @@ func NewStore() *Store {
 		elements:         make(map[string][]string),
 		blockingClients:  make(map[string][]chan string),
 		streams:          make(map[string]Stream),
+		sortedSets:       make(map[string]SkipList),
 		IsDoneRebuilding: false,
 	}
+}
+
+func (s *Store) ZAdd(setName string, member string, score float64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	set, exists := s.sortedSets[setName]
+	if !exists {
+		set = *NewSkipList()
+	}
+	lenBefore := set.length
+
+	set.InsertElement(member, score)
+
+	lenAfter := set.length
+
+	// fmt.Printf("inserted element: %s with score %f", member, score)
+	s.sortedSets[setName] = set
+	return lenAfter - lenBefore
+}
+
+func (s *Store) ZRank(setName string, member string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	set, exists := s.sortedSets[setName]
+	if !exists {
+		return 0, fmt.Errorf("set doesn't exist")
+	}
+
+	_, exists = set.dictionary[member]
+	if !exists {
+		return 0, fmt.Errorf("member doesn't exist")
+	}
+
+	return set.FindElementRank(member), nil
 }
 
 func (s *Store) Set(key, value string, ttl time.Duration) {

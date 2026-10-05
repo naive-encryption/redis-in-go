@@ -52,6 +52,39 @@ func NewStore() *Store {
 	}
 }
 
+func (s *Store) ZRange(setName string, start, end int) []string {
+	if start > end {
+		return nil
+	}
+
+	set, exists := s.sortedSets[setName]
+	if !exists {
+		return nil
+	}
+
+	if start >= set.length {
+		return nil
+	}
+
+	if end > set.length {
+		end = set.length - 1
+	}
+
+	out := make([]string, 0, end-start)
+	curr := set.GetElement(start)
+	fmt.Println("curr elements member:", curr.member)
+
+	for i := start; i <= end; i++ {
+		if curr == nil {
+			break
+		}
+		out = append(out, curr.member)
+		curr = curr.forward[0]
+	}
+	fmt.Println("out:", out)
+	return out
+}
+
 func (s *Store) ZAdd(setName string, member string, score float64) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

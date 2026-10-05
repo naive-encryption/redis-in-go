@@ -123,8 +123,35 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 		"unsubscribe": h.unsubscribeCmd,
 		"zadd":        h.zaddCmd, // not propagated
 		"zrank":       h.zrankCmd,
+		"zrange":      h.zrangeCmd,
 	}
 	return h
+}
+
+func (h *Handler) zrangeCmd(args []string) {
+	setName := args[0]
+	startIndex, err := strconv.Atoi(args[1])
+	if err != nil {
+		fmt.Println("Failed to convert string to int")
+		return
+	}
+	endIndex, err := strconv.Atoi(args[2])
+	if err != nil {
+		fmt.Println("Failed to convert string to int")
+		return
+	}
+
+	elements := h.store.ZRange(setName, startIndex, endIndex)
+
+	responseArrHead := fmt.Sprintf("*%d\r\n", len(elements))
+	var sb strings.Builder
+	for _, element := range elements {
+		encodedElement := fmt.Sprintf("$%d\r\n%s\r\n", len(element), element)
+		sb.Write([]byte(encodedElement))
+	}
+	response := responseArrHead + sb.String()
+	fmt.Println("response:", response)
+	h.SendResponse(response)
 }
 
 func (h *Handler) zrankCmd(args []string) {

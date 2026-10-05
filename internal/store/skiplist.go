@@ -89,7 +89,7 @@ func (sl *SkipList) InsertElement(member string, score float64) {
 	}
 
 	sl.dictionary[member] = newNode
-	sl.PrintList()
+	// sl.PrintList()
 }
 
 func (sl SkipList) FindElementRank(member string) int {
@@ -109,6 +109,24 @@ func (sl SkipList) FindElementRank(member string) int {
 		}
 	}
 	return rank - 1
+}
+
+func (sl SkipList) GetElement(rank int) *Node {
+	rank++ // to account for 1-based indexing
+	if rank < 0 || rank >= sl.length {
+		return nil
+	}
+
+	curr := sl.head
+	currRank := 0
+
+	for i := sl.maxLevel - 1; i >= 0; i-- {
+		for curr.forward[i] != nil && (currRank+curr.span[i]) <= rank {
+			currRank += curr.span[i]
+			curr = curr.forward[i]
+		}
+	}
+	return curr
 }
 
 func (sl *SkipList) PrintList() {

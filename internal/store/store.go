@@ -52,6 +52,14 @@ func NewStore() *Store {
 	}
 }
 
+func (s *Store) ZCard(setName string) int {
+	set, exists := s.sortedSets[setName]
+	if !exists {
+		return 0
+	}
+	return set.length
+}
+
 func (s *Store) ZRange(setName string, start, end int) []string {
 	set, exists := s.sortedSets[setName]
 	if !exists {

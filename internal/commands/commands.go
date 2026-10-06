@@ -124,8 +124,17 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 		"zadd":        h.zaddCmd, // not propagated
 		"zrank":       h.zrankCmd,
 		"zrange":      h.zrangeCmd,
+		"zcard":       h.zcardCmd,
 	}
 	return h
+}
+
+func (h *Handler) zcardCmd(args []string) {
+	setName := args[0]
+
+	cardinality := h.store.ZCard(setName)
+	response := fmt.Sprintf(":%d\r\n", cardinality)
+	h.SendResponse(response)
 }
 
 func (h *Handler) zrangeCmd(args []string) {

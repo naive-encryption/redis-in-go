@@ -53,12 +53,20 @@ func NewStore() *Store {
 }
 
 func (s *Store) ZRange(setName string, start, end int) []string {
-	if start > end {
+	set, exists := s.sortedSets[setName]
+	if !exists {
 		return nil
 	}
 
-	set, exists := s.sortedSets[setName]
-	if !exists {
+	if start < 0 {
+		start = max(set.length+start, 0)
+	}
+
+	if end < 0 {
+		end = max(set.length+end, 0)
+	}
+
+	if start > end {
 		return nil
 	}
 

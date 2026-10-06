@@ -60,6 +60,20 @@ func (s *Store) ZCard(setName string) int {
 	return set.length
 }
 
+func (s *Store) ZScore(setName, key string) (score float64, found bool) {
+	set, exists := s.sortedSets[setName]
+	if !exists {
+		return 0, false
+	}
+
+	element, exists := set.dictionary[key]
+	if !exists {
+		return 0, false
+	}
+
+	return element.score, true
+}
+
 func (s *Store) ZRange(setName string, start, end int) []string {
 	set, exists := s.sortedSets[setName]
 	if !exists {

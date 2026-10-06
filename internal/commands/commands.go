@@ -125,8 +125,24 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 		"zrank":       h.zrankCmd,
 		"zrange":      h.zrangeCmd,
 		"zcard":       h.zcardCmd,
+		"zscore":      h.zscoreCmd,
 	}
 	return h
+}
+
+func (h *Handler) zscoreCmd(args []string) {
+	setName := args[0]
+	keyName := args[1]
+
+	var response string
+	score, found := h.store.ZScore(setName, keyName)
+	if !found {
+		response = "$-1\r\n"
+	} else {
+		formatted := strconv.FormatFloat(score, 'g', -1, 64)
+		response = fmt.Sprintf("$%d\r\n%g\r\n", len(formatted), score)
+	}
+	h.SendResponse(response)
 }
 
 func (h *Handler) zcardCmd(args []string) {

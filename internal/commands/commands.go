@@ -126,8 +126,17 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 		"zrange":      h.zrangeCmd,
 		"zcard":       h.zcardCmd,
 		"zscore":      h.zscoreCmd,
+		"zrem":        h.zremCmd,
 	}
 	return h
+}
+
+func (h *Handler) zremCmd(args []string) {
+	setName := args[0]
+	member := args[1]
+	removed := h.store.ZRem(setName, member)
+	response := fmt.Sprintf(":%d\r\n", removed)
+	h.SendResponse(response)
 }
 
 func (h *Handler) zscoreCmd(args []string) {

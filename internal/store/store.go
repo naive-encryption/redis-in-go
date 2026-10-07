@@ -52,6 +52,19 @@ func NewStore() *Store {
 	}
 }
 
+func (s *Store) ZRem(setName, memberName string) int {
+	set, exists := s.sortedSets[setName]
+	if !exists {
+		return 0
+	}
+	_, exists = set.dictionary[memberName]
+	if !exists {
+		return 0
+	}
+	set.RemoveElementByName(memberName)
+	return 1
+}
+
 func (s *Store) ZCard(setName string) int {
 	set, exists := s.sortedSets[setName]
 	if !exists {
@@ -102,7 +115,6 @@ func (s *Store) ZRange(setName string, start, end int) []string {
 
 	out := make([]string, 0, end-start)
 	curr := set.GetElement(start)
-	fmt.Println("curr elements member:", curr.member)
 
 	for i := start; i <= end; i++ {
 		if curr == nil {
@@ -111,7 +123,6 @@ func (s *Store) ZRange(setName string, start, end int) []string {
 		out = append(out, curr.member)
 		curr = curr.forward[0]
 	}
-	fmt.Println("out:", out)
 	return out
 }
 
@@ -128,7 +139,6 @@ func (s *Store) ZAdd(setName string, member string, score float64) int {
 
 	lenAfter := set.length
 
-	// fmt.Printf("inserted element: %s with score %f", member, score)
 	s.sortedSets[setName] = set
 	return lenAfter - lenBefore
 }

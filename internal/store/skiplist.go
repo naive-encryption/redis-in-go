@@ -42,6 +42,39 @@ func (sl *SkipList) NewNode(member string, score float64, maxLevel int) *Node {
 	return &Node{member: member, score: score, forward: make([]*Node, nodeMaxLevel), span: make([]int, nodeMaxLevel)}
 }
 
+func (sl *SkipList) RemoveElementByName(member string) {
+	element, exists := sl.dictionary[member]
+	if !exists {
+		return
+	}
+
+	update := make([]*Node, sl.maxLevel)
+	curr := sl.head
+
+	for i := sl.maxLevel - 1; i >= 0; i-- {
+		for curr.forward[i] != nil && before(curr.forward[i], element) {
+			curr = curr.forward[i]
+		}
+		update[i] = curr
+	}
+
+	for i := 0; i < sl.maxLevel-1; i++ {
+		if update[i].forward[i] == element {
+			update[i].span[i] += element.span[i] - 1
+			update[i].forward[i] = element.forward[i]
+		} else {
+			update[i].span[i]--
+		}
+	}
+
+	sl.length--
+	delete(sl.dictionary, member)
+}
+
+func before(a, b *Node) bool {
+	return a.score < b.score || (a.score == b.score && a.member < b.member)
+}
+
 func (sl *SkipList) InsertElement(member string, score float64) {
 	var newNode *Node
 

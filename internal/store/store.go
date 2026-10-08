@@ -52,6 +52,32 @@ func NewStore() *Store {
 	}
 }
 
+func (s *Store) GeoPos(setName string, posNames []string) (result [][]float64) {
+	result = make([][]float64, len(posNames))
+	set, exists := s.sortedSets[setName]
+	if !exists {
+		for i := 0; i < len(posNames); i++ {
+			result[i] = make([]float64, 2)
+			result[i][0] = 0
+			result[i][0] = 0
+		}
+		return result
+	}
+	for i := 0; i < len(posNames); i++ {
+		result[i] = make([]float64, 2)
+		location, exists := set.dictionary[posNames[i]]
+		if !exists {
+			result[i][0] = 0
+			result[i][0] = 0
+			continue
+		}
+		result[i][0], result[i][1] = GeoScoreDecode(uint64(location.score))
+
+	}
+	fmt.Println(result)
+	return result
+}
+
 func (s *Store) GeoAdd(setName string, longitude, latitude float64, member string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

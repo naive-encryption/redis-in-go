@@ -128,8 +128,30 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 		"zscore":      h.zscoreCmd,
 		"zrem":        h.zremCmd,
 		"geoadd":      h.geoaddCmd,
+		"geopos":      h.geoposCmd,
 	}
 	return h
+}
+
+func (h *Handler) geoposCmd(args []string) {
+	setName := args[0]
+	posNames := make([]string, 0, len(args[1:]))
+	for _, posName := range args[1:] {
+		posNames = append(posNames, posName)
+	}
+	result := h.store.GeoPos(setName, posNames)
+	var sb strings.Builder
+	sb.Write([]byte(fmt.Sprintf("*%d\r\n", len(result))))
+	for _, coords := range result {
+		if coords[0] == 0 || coords[1] == 0 {
+			sb.Write([]byte(fmt.Sprintf("*-1\r\n")))
+			continue
+		}
+		latFormatted := strconv.FormatFloat(coords[0], 'g', -1, 64)
+		lonFormatted := strconv.FormatFloat(coords[1], 'g', -1, 64)
+		sb.Write([]byte(fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(lonFormatted), lonFormatted, len(latFormatted), latFormatted)))
+	}
+	h.SendResponse(sb.String())
 }
 
 func (h *Handler) geoaddCmd(args []string) {

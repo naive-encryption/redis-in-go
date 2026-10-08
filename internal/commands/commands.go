@@ -127,8 +127,29 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 		"zcard":       h.zcardCmd,
 		"zscore":      h.zscoreCmd,
 		"zrem":        h.zremCmd,
+		"geoadd":      h.geoaddCmd,
 	}
 	return h
+}
+
+func (h *Handler) geoaddCmd(args []string) {
+	setName := args[0]
+	longitude, err := strconv.ParseFloat(args[1], 64)
+	if err != nil {
+		fmt.Println("failed to convert longitude")
+	}
+	latitude, err := strconv.ParseFloat(args[2], 64)
+	if err != nil {
+		fmt.Println("failed to convert latitude")
+	}
+	member := args[3]
+
+	amountAdded, err := h.store.GeoAdd(setName, longitude, latitude, member)
+	response := fmt.Sprintf(":%d\r\n", amountAdded)
+	if err != nil {
+		response = fmt.Sprintf("-ERR %s\r\n", err.Error())
+	}
+	h.SendResponse(response)
 }
 
 func (h *Handler) zremCmd(args []string) {

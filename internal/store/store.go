@@ -52,7 +52,26 @@ func NewStore() *Store {
 	}
 }
 
+func (s *Store) GeoAdd(setName string, longitude, latitude float64, member string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if longitude < MIN_LONGITUDE || longitude > MAX_LONGITUDE || latitude < MIN_LATITUDE || latitude > MAX_LATITUDE {
+		return 0, fmt.Errorf("Invalid longitude,latitude pair %g, %g", longitude, latitude)
+	}
+	set, exists := s.sortedSets[setName]
+	if !exists {
+		set = *NewSkipList()
+	}
+	score := GeoScoreEncode(latitude, longitude)
+	set.InsertElement(member, float64(score))
+	s.sortedSets[setName] = set
+
+	return 1, nil
+}
+
 func (s *Store) ZRem(setName, memberName string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	set, exists := s.sortedSets[setName]
 	if !exists {
 		return 0
@@ -66,6 +85,8 @@ func (s *Store) ZRem(setName, memberName string) int {
 }
 
 func (s *Store) ZCard(setName string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	set, exists := s.sortedSets[setName]
 	if !exists {
 		return 0
@@ -74,6 +95,8 @@ func (s *Store) ZCard(setName string) int {
 }
 
 func (s *Store) ZScore(setName, key string) (score float64, found bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	set, exists := s.sortedSets[setName]
 	if !exists {
 		return 0, false
@@ -88,6 +111,8 @@ func (s *Store) ZScore(setName, key string) (score float64, found bool) {
 }
 
 func (s *Store) ZRange(setName string, start, end int) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	set, exists := s.sortedSets[setName]
 	if !exists {
 		return nil

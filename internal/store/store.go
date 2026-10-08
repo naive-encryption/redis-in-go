@@ -52,7 +52,28 @@ func NewStore() *Store {
 	}
 }
 
+func (s *Store) GeoDist(setName, loc1, loc2 string) (result float64, found bool) {
+	set, exists := s.sortedSets[setName]
+	if !exists {
+		return 0, false
+	}
+	location1, exists := set.dictionary[loc1]
+	if !exists {
+		return 0, false
+	}
+	location2, exists := set.dictionary[loc2]
+	if !exists {
+		return 0, false
+	}
+	lat1, lon1 := GeoScoreDecode(uint64(location1.score))
+	lat2, lon2 := GeoScoreDecode(uint64(location2.score))
+
+	return GetDistance(lat1, lat2, lon1, lon2), true
+}
+
 func (s *Store) GeoPos(setName string, posNames []string) (result [][]float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	result = make([][]float64, len(posNames))
 	set, exists := s.sortedSets[setName]
 	if !exists {

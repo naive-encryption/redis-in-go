@@ -129,8 +129,23 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 		"zrem":        h.zremCmd,
 		"geoadd":      h.geoaddCmd,
 		"geopos":      h.geoposCmd,
+		"geodist":     h.geodistCmd,
 	}
 	return h
+}
+
+func (h *Handler) geodistCmd(args []string) {
+	setName := args[0]
+	loc1 := args[1]
+	loc2 := args[2]
+
+	result, found := h.store.GeoDist(setName, loc1, loc2)
+
+	if !found {
+		h.SendResponse("*-1\r\n")
+	}
+	resultFormatted := strconv.FormatFloat(result, 'g', -1, 64)
+	h.SendResponse(fmt.Sprintf("$%d\r\n%s\r\n", len(resultFormatted), resultFormatted))
 }
 
 func (h *Handler) geoposCmd(args []string) {
@@ -142,14 +157,15 @@ func (h *Handler) geoposCmd(args []string) {
 	result := h.store.GeoPos(setName, posNames)
 	var sb strings.Builder
 	sb.Write([]byte(fmt.Sprintf("*%d\r\n", len(result))))
+	sb.Grow(16 + len(result)*40)
 	for _, coords := range result {
-		if coords[0] == 0 || coords[1] == 0 {
+		if coords[0] == 0 || coords[1] == 0 { // TODO: refactor
 			sb.Write([]byte(fmt.Sprintf("*-1\r\n")))
 			continue
 		}
 		latFormatted := strconv.FormatFloat(coords[0], 'g', -1, 64)
 		lonFormatted := strconv.FormatFloat(coords[1], 'g', -1, 64)
-		sb.Write([]byte(fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(lonFormatted), lonFormatted, len(latFormatted), latFormatted)))
+		sb.Write([]byte(fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(lonFormatted), lonFormatted, len(latFormatted), latFormatted))) // TODO: refactr using fprintf
 	}
 	h.SendResponse(sb.String())
 }

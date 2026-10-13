@@ -52,6 +52,16 @@ func NewStore() *Store {
 	}
 }
 
+func (s *Store) GeoSearch(setName string, lat, lon float64, radiusMeters float64) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	set, exists := s.sortedSets[setName]
+	if !exists {
+		return nil
+	}
+	return set.GeoSearchRadius(lat, lon, radiusMeters)
+}
+
 func (s *Store) GeoDist(setName, loc1, loc2 string) (result float64, found bool) {
 	set, exists := s.sortedSets[setName]
 	if !exists {

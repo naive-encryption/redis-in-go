@@ -125,7 +125,7 @@ func (sl *SkipList) InsertElement(member string, score float64) {
 	// sl.PrintList()
 }
 
-func (sl SkipList) FindElementRank(member string) int {
+func (sl *SkipList) FindElementRank(member string) int {
 	node, exists := sl.dictionary[member]
 	if !exists {
 		return 0
@@ -144,7 +144,7 @@ func (sl SkipList) FindElementRank(member string) int {
 	return rank - 1
 }
 
-func (sl SkipList) GetElement(rank int) *Node {
+func (sl *SkipList) GetElement(rank int) *Node {
 	rank++ // to account for 1-based indexing
 	if rank < 0 || rank >= sl.length {
 		return nil
@@ -160,6 +160,61 @@ func (sl SkipList) GetElement(rank int) *Node {
 		}
 	}
 	return curr
+}
+
+func (sl *SkipList) FirstGE(score float64) *Node {
+	curr := sl.head
+	for i := sl.maxLevel - 1; i >= 0; i-- {
+		for curr.forward[i] != nil && curr.forward[i].score < score {
+			curr = curr.forward[i]
+		}
+	}
+	return curr.forward[0]
+}
+
+func (sl *SkipList) GeoSearchRadius(lat, lon, radius float64) []string {
+	step := GeoSearchEstimateSteps(radius, lat)
+
+	if step <= 2 {
+		return sl.GeoSearchScan(lat, lon, radius)
+	}
+
+	if step > 1 {
+		minLat, maxLat, minLon, maxLon := cellArea(cellOf(lat, lon, step), step)
+		h, w := maxLat-minLat, maxLon-minLon
+		if GetDistance(lat, lon, maxLat+h, lon) < radius ||
+			GetDistance(lat, lon, minLat-h, lon) < radius ||
+			GetDistance(lat, lon, lat, maxLon+w) < radius ||
+			GetDistance(lat, lon, lat, minLon-w) < radius {
+			step--
+		}
+	}
+
+	shift := 52 - 2*step
+	var results []string
+	for _, cell := range GeoSearchGetNeighborCells(lat, lon, step) {
+		lo := float64(cell << shift)
+		hi := float64((cell + 1) << shift)
+
+		for n := sl.FirstGE(lo); n != nil && n.score < hi; n = n.forward[0] {
+			nLat, nLon := GeoScoreDecode(uint64(n.score))
+			if GetDistance(lat, lon, nLat, nLon) <= radius {
+				results = append(results, n.member)
+			}
+		}
+	}
+	return results
+}
+
+func (sl *SkipList) GeoSearchScan(lat, lon, radius float64) []string {
+	var results []string
+	for n := sl.head.forward[0]; n != nil; n = n.forward[0] {
+		nLat, nLon := GeoScoreDecode(uint64(n.score))
+		if GetDistance(lat, nLat, lon, nLon) <= radius {
+			results = append(results, n.member)
+		}
+	}
+	return results
 }
 
 func (sl *SkipList) PrintList() {

@@ -99,7 +99,10 @@ func degPos(lat, lon float64) pos {
 	return pos{lat * math.Pi / 180, lon * math.Pi / 180}
 }
 
-const rEarth = 6372797.560856 // meters
+const (
+	rEarth      = 6372797.560856 // meters
+	mercatorMax = 20037726.37
+)
 
 func hsDist(p1, p2 pos) float64 {
 	return 2 * rEarth * math.Asin(math.Sqrt(haversine(p2.φ-p1.φ)+
@@ -108,4 +111,84 @@ func hsDist(p1, p2 pos) float64 {
 
 func GetDistance(lat1, lat2, lon1, lon2 float64) float64 {
 	return hsDist(degPos(lat1, lon1), degPos(lat2, lon2))
+}
+
+func GeoSearchEstimateSteps(radius, lat float64) uint {
+	if radius == 0 {
+		return 26
+	}
+	step := 1
+
+	for radius < mercatorMax {
+		radius *= 2
+		step++
+	}
+	step -= 2
+
+	if lat > 66 || lat < -66 {
+		step--
+		if lat > 80 || lat < -80 {
+			step--
+		}
+	}
+	if step < 1 {
+		step = 1
+	}
+	if step > 26 {
+		step = 26
+	}
+	return uint(step)
+}
+
+func cellOf(lat, lon float64, step uint) uint64 {
+	return GeoScoreEncode(lat, lon) >> (52 - 2*step)
+}
+
+func cellArea(cell uint64, step uint) (minLat, maxLat, minLon, maxLon float64) {
+	full := cell << (52 - 2*step)
+
+	latGrid := float64(compactInt64ToInt32(full))
+	lonGrid := float64(compactInt64ToInt32(full))
+
+	const cells = float64(1 << 26)
+
+	minLat = MIN_LATITUDE + latGrid*LATITUDE_RANGE/cells
+	minLon = MIN_LONGITUDE + lonGrid*LONGITUDE_RANGE/cells
+
+	size := float64(uint(1) << step)
+	maxLat = minLat + LATITUDE_RANGE/size
+	maxLon = LONGITUDE_RANGE / size
+	return
+}
+
+func GeoSearchGetNeighborCells(lon, lat float64, step uint) []uint64 {
+	cell := cellOf(lat, lon, step)
+	minLat, maxLat, minLon, maxLon := cellArea(cell, step)
+	h, w := maxLat-minLat, maxLon-minLon
+	cLat, cLon := (minLat+maxLat)/2, (minLon+maxLon)/2
+
+	seen := make(map[uint64]bool)
+
+	var cells []uint64
+
+	for dy := -1; dy <= 1; dy++ {
+		nLat := cLat + float64(dy)*h
+		if nLat < MIN_LATITUDE || nLat > MIN_LATITUDE+LATITUDE_RANGE {
+			continue
+		}
+		for dx := -1; dx <= 1; dx++ {
+			nLon := cLon + float64(dx)*w
+			if nLon > 180 {
+				nLon -= 360
+			} else if nLon < -180 {
+				nLon += 360
+			}
+			c := cellOf(nLat, nLon, step)
+			if !seen[c] {
+				seen[c] = true
+				cells = append(cells, c)
+			}
+		}
+	}
+	return cells
 }

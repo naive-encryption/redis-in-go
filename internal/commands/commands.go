@@ -130,8 +130,45 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 		"geoadd":      h.geoaddCmd,
 		"geopos":      h.geoposCmd,
 		"geodist":     h.geodistCmd,
+		"geosearch":   h.geosearchCmd,
 	}
 	return h
+}
+
+func (h *Handler) geosearchCmd(args []string) {
+	setName := args[0]
+	var lon, lat float64
+	var err error
+	if strings.ToLower(args[1]) == "fromlonlat" {
+		lon, err = strconv.ParseFloat(args[2], 64)
+		if err != nil {
+			fmt.Println(err)
+		}
+		lat, err = strconv.ParseFloat(args[3], 64)
+		if err != nil {
+			fmt.Println(err)
+		}
+	}
+	var radius float64
+	if strings.ToLower(args[4]) == "byradius" {
+		radius, err = strconv.ParseFloat(args[5], 64)
+		if err != nil {
+			fmt.Println(err)
+		}
+	}
+	result := h.store.GeoSearch(setName, lat, lon, radius)
+	if len(result) == 0 {
+		h.SendResponse("*0\r\n")
+		return
+	}
+
+	var sb strings.Builder
+	sb.Grow(16 + len(result)*48)
+	fmt.Fprintf(&sb, "*%d\r\n", len(result))
+	for _, location := range result {
+		fmt.Fprintf(&sb, "$%d\r\n%s\r\n", len(location), location)
+	}
+	h.SendResponse(sb.String())
 }
 
 func (h *Handler) geodistCmd(args []string) {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"redis-in-go/internal/aof"
+	"redis-in-go/internal/auth"
 	"redis-in-go/internal/info"
 	rdbparser "redis-in-go/internal/rdbParser"
 	"redis-in-go/internal/resp"
@@ -36,6 +37,9 @@ type MasterNode struct {
 }
 
 type Handler struct {
+	user          *auth.User
+	authenticated bool
+
 	conn       net.Conn
 	MasterNode *MasterNode
 	builtIns   map[string]func(args []string)
@@ -90,6 +94,7 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 	h.aofBuffer = make([]string, 0, 96)
 	h.subs = make(map[string]struct{})
 	h.sendChan = make(chan []byte, 256)
+	h.user = auth.NewUser()
 	h.builtIns = map[string]func(args []string){
 		"echo":        h.echoCmd,
 		"ping":        h.pingCmd,
@@ -131,8 +136,19 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 		"geopos":      h.geoposCmd,
 		"geodist":     h.geodistCmd,
 		"geosearch":   h.geosearchCmd,
+		"acl":         h.aclCmd,
 	}
 	return h
+}
+
+func (h *Handler) aclCmd(args []string) {
+	if len(args) == 0 {
+		return
+	}
+	switch strings.ToLower(args[0]) {
+	case "whoami":
+		h.SendResponse(fmt.Sprintf("$%d\r\n%s\r\n", len(h.user.Name), h.user.Name))
+	}
 }
 
 func (h *Handler) geosearchCmd(args []string) {
@@ -1010,9 +1026,14 @@ func (h *Handler) handleCommands(commands []string) {
 }
 
 func (h *Handler) executeBuiltIn(cmd string, args []string) {
+	if strings.ToLower(cmd) == "command" {
+		h.SendResponse("*0\r\n")
+		return
+	}
 	builtInFunc, ok := h.builtIns[cmd]
 	if !ok {
-		fmt.Println("not a built-in")
+		h.SendResponse("-ERR unknown command '" + cmd + "'\r\n")
+		return
 	}
 	if h.IsSubscriberMode && !h.IsSubscribeCmd(cmd) {
 		response := fmt.Sprintf("-ERR can't execute '%s' when one or more subscriptions exist\r\n", cmd)

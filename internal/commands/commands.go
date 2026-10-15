@@ -172,6 +172,19 @@ func (h *Handler) aclCmd(args []string) {
 			fmt.Fprintf(&sb, "$%d\r\n%s\r\n", len(pass), pass)
 		}
 		h.SendResponse(sb.String())
+	case "setuser":
+		if len(args) < 3 {
+			return // TODO: send response
+		}
+		username := args[1]
+		pass := strings.TrimPrefix(args[2], ">")
+
+		user, exists := auth.Users[username]
+		if !exists {
+			return // TODO: send response
+		}
+		user.AddPassword(pass)
+		h.SendResponse("+OK\r\n")
 
 	}
 }

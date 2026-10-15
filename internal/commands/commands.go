@@ -94,7 +94,7 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 	h.aofBuffer = make([]string, 0, 96)
 	h.subs = make(map[string]struct{})
 	h.sendChan = make(chan []byte, 256)
-	h.user = auth.NewUser()
+	h.user = auth.Users["default"]
 	h.builtIns = map[string]func(args []string){
 		"echo":        h.echoCmd,
 		"ping":        h.pingCmd,
@@ -143,11 +143,36 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 
 func (h *Handler) aclCmd(args []string) {
 	if len(args) == 0 {
-		return
+		return // TODO: send response
 	}
 	switch strings.ToLower(args[0]) {
 	case "whoami":
 		h.SendResponse(fmt.Sprintf("$%d\r\n%s\r\n", len(h.user.Name), h.user.Name))
+	case "getuser":
+		if len(args) < 2 {
+			return // TODO: send response
+		}
+		user, exists := auth.Users[args[1]]
+		if !exists {
+			fmt.Println("debug")
+			return // TODO: send response
+		}
+
+		var sb strings.Builder
+		sb.Grow(16 + len(user.Flags)*55 + len(user.Passwords)*71) // to account for field expected length + 7 bytes of \r\n etc
+		sb.WriteString("*4\r\n")
+		sb.WriteString("$5\r\nflags\r\n")
+		fmt.Fprintf(&sb, "*%d\r\n", len(user.Flags))
+		for k := range user.Flags {
+			fmt.Fprintf(&sb, "$%d\r\n%s\r\n", len(k), k)
+		}
+		sb.WriteString("$9\r\npasswords\r\n")
+		fmt.Fprintf(&sb, "*%d\r\n", len(user.Passwords))
+		for _, pass := range user.Passwords {
+			fmt.Fprintf(&sb, "$%d\r\n%s\r\n", len(pass), pass)
+		}
+		h.SendResponse(sb.String())
+
 	}
 }
 

@@ -6,6 +6,15 @@ type User struct {
 	Passwords []string
 }
 
+var Users map[string]*User
+
+func init() {
+	Users = make(map[string]*User)
+	Users["default"] = NewUser()
+}
+
 func NewUser() *User {
-	return &User{Name: "default", Flags: make(map[string]bool), Passwords: make([]string, 16)}
+	user := User{Name: "default", Flags: make(map[string]bool), Passwords: make([]string, 0, 16)}
+	user.Flags["nopass"] = true
+	return &user
 }

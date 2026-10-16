@@ -34,3 +34,13 @@ func (u *User) AddPassword(pass string) {
 	u.Passwords = append(u.Passwords, GenerateSHA(pass))
 	delete(u.Flags, "nopass")
 }
+
+func (u *User) Authorize(password string) bool {
+	hashed := GenerateSHA(password)
+	for _, pass := range u.Passwords {
+		if pass == hashed {
+			return true
+		}
+	}
+	return false
+}

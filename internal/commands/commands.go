@@ -137,8 +137,27 @@ func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMas
 		"geodist":     h.geodistCmd,
 		"geosearch":   h.geosearchCmd,
 		"acl":         h.aclCmd,
+		"auth":        h.authCmd,
 	}
 	return h
+}
+
+func (h *Handler) authCmd(args []string) {
+	if len(args) < 2 {
+		return // TODO: send a response
+	}
+	username := args[0]
+	pass := args[1]
+	user, exist := auth.Users[username]
+	if !exist {
+		h.SendResponse("-WRONGPASS invalid username-password pair or user is disabled.\r\n")
+	}
+	if !user.Authorize(pass) {
+		h.SendResponse("-WRONGPASS invalid username-password pair or user is disabled.\r\n")
+	} else {
+		h.user = user
+		h.SendResponse("+OK\r\n")
+	}
 }
 
 func (h *Handler) aclCmd(args []string) {

@@ -88,13 +88,23 @@ func InitMasterNode() *MasterNode {
 	return masterNode
 }
 
+func (h *Handler) AuthenticateConnection() {
+	if nopass, exists := auth.Users["default"].Flags["nopass"]; exists {
+		if !nopass {
+			return
+		}
+		h.user = auth.Users["default"]
+		h.authenticated = true
+	}
+}
+
 func NewHandler(conn net.Conn, store *store.Store, masterNode *MasterNode, isMasterConn bool) *Handler {
 	h := &Handler{conn: conn, store: store, MasterNode: masterNode, isMasterConn: isMasterConn}
 	h.WatchedKeys = make(map[string]uint64)
 	h.aofBuffer = make([]string, 0, 96)
 	h.subs = make(map[string]struct{})
 	h.sendChan = make(chan []byte, 256)
-	h.user = auth.Users["default"]
+	h.AuthenticateConnection()
 	h.builtIns = map[string]func(args []string){
 		"echo":        h.echoCmd,
 		"ping":        h.pingCmd,
@@ -156,6 +166,7 @@ func (h *Handler) authCmd(args []string) {
 		h.SendResponse("-WRONGPASS invalid username-password pair or user is disabled.\r\n")
 	} else {
 		h.user = user
+		h.authenticated = true
 		h.SendResponse("+OK\r\n")
 	}
 }
@@ -1079,6 +1090,10 @@ func (h *Handler) getCmd(args []string) {
 }
 
 func (h *Handler) handleCommands(commands []string) {
+	if !h.authenticated && strings.ToLower(commands[0]) != "auth" {
+		h.SendResponse("-NOAUTH Authentication required\r\n")
+		return
+	}
 	h.executeBuiltIn(strings.ToLower(commands[0]), commands[1:])
 }
 
